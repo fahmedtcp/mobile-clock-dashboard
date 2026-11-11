@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Mobile Clock Dashboard</title>
+  <script>
+    // Set the theme before the stylesheet paints, so the page never flashes the wrong one. Light by default.
+    try { var t = localStorage.getItem('theme'); document.documentElement.dataset.theme = /^(light|dark|system)$/.test(t) ? t : 'light'; }
+    catch (e) { document.documentElement.dataset.theme = 'light'; }
+  </script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="bar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◷</span>
+        <div class="brand-text">
+          <h1>Mobile Clock</h1>
+          <span class="subtitle">Team dashboard · tcp-software/mobile-clock</span>
+        </div>
+      </div>
+      <div id="status-strip" class="status-strip" aria-label="Repo status"></div>
+    </div>
+  </header>
+
+  <div class="shell">
+    <nav class="sidebar" id="nav" aria-label="Views"></nav>
+    <main id="main">
+      <div class="banner info" id="jira-banner" role="status" hidden></div>
+      <div id="views"></div>
+    </main>
+  </div>
+
+  <nav class="tabbar" id="tabbar" aria-label="Views"></nav>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
