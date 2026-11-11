@@ -6,6 +6,7 @@ import quality from './views/quality.js';
 import team from './views/team.js';
 import time from './views/time.js';
 import settings, { applyTheme } from './views/settings.js';
+import { openPalette } from './palette.js';
 
 const VIEWS = [home, release, quality, team, time];
 // Settings sits at the bottom of the sidebar, outside the 1–5 shortcuts.
@@ -26,16 +27,24 @@ if (!ALL.some((v) => v.id === current)) current = 'home';
 // ---- navigation ----
 
 function renderNav() {
+  // macOS-style: plain accent icons, gray counts; the tab bar keeps iOS red badges.
+  const count = (id) => (badges[id] ? el('span', { class: 'nav-count', 'aria-label': `${badges[id]} need attention` }, String(badges[id])) : null);
+  const item = (v, extra = '') => el('button', { type: 'button', class: `nav-item ${extra}`, 'aria-current': v.id === current ? 'page' : null, onclick: () => show(v.id) },
+    icon(LOOK[v.id][0]), el('span', { class: 'nav-label' }, v.title), count(v.id));
+  $('nav').replaceChildren(...VIEWS.map((v) => item(v)), item(settings, 'nav-settings'));
   const badge = (id) => (badges[id] ? el('span', { class: 'nav-badge', 'aria-label': `${badges[id]} need attention` }, String(badges[id])) : null);
-  $('nav').replaceChildren(
-    ...VIEWS.map((v, i) => el('button', { type: 'button', class: 'nav-item', 'aria-current': v.id === current ? 'page' : null, onclick: () => show(v.id) },
-      glyph(LOOK[v.id][0], LOOK[v.id][1]), el('span', { class: 'nav-label' }, v.title), badge(v.id) ?? el('kbd', {}, String(i + 1)))),
-    el('button', { type: 'button', class: 'nav-item nav-settings', 'aria-current': current === 'settings' ? 'page' : null, onclick: () => show('settings') },
-      glyph('gear', 'gray'), el('span', { class: 'nav-label' }, 'Settings'), el('kbd', {}, ',')),
-    el('div', { class: 'sidebar-foot' }, el('span', { class: 'kbd-hint' }, el('kbd', {}, '1'), '–', el('kbd', {}, String(VIEWS.length)), ' switch views'), el('span', { class: 'kbd-hint' }, el('kbd', {}, '/'), ' find a build'), el('span', { class: 'kbd-hint' }, el('kbd', {}, 't'), ' confirm hours')));
   $('tabbar').replaceChildren(...ALL.map((v) => el('button', { type: 'button', class: 'tab-item', 'aria-current': v.id === current ? 'page' : null, onclick: () => show(v.id) },
     icon(LOOK[v.id][0]), el('span', {}, v.title), badge(v.id))));
 }
+
+const palette = () => openPalette({
+  views: ALL.map((v, i) => ({ id: v.id, title: v.title, icon: LOOK[v.id][0], key: v.id === 'settings' ? ',' : String(i + 1) })),
+  shared,
+  go: show,
+  lookup: (key) => { show('home'); const input = $('lookup-input'); if (input) { input.value = key; input.form.requestSubmit(); } },
+  setTheme: (t) => { applyTheme(t); api('/api/settings', { method: 'PUT', body: JSON.stringify({ theme: t }) }).then((v) => { shared.settings = v; }).catch(() => {}); },
+});
+$('palette-btn').addEventListener('click', palette);
 
 function show(id) {
   current = id;
@@ -155,6 +164,7 @@ const ctx = {
 
 // Keyboard: 1–4 switch views, / jumps to the build lookup. Ignored while typing or with a sheet open.
 document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); palette(); return; }
   if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector('dialog[open]')) return;
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
   const n = Number(e.key);

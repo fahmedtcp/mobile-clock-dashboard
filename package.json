@@ -3,9 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
-    "test": "JIRA_BASE_URL=https://timeclockplus.atlassian.net node --test test/*.test.js"
+    "test": "JIRA_BASE_URL=https://timeclockplus.atlassian.net node --test test/*.test.js",
+    "install-app": "node scripts/app.js install",
+    "uninstall-app": "node scripts/app.js uninstall",
+    "app-status": "node scripts/app.js status"
   }
 }

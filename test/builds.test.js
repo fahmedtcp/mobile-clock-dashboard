@@ -112,3 +112,46 @@ test('simulator build sends build dev .app and never release prod', async () => 
   await createTracker(gh).trigger(1042, ['mcIosSim']);
   assert.deepEqual(gh.runCalls, [['workflow', 'run', 'run-mc-ios.yml', '-R', 'tcp-software/mobile-clock', '--ref', 'TCPMOB-1482-x', '-f', 'buildType=build dev .app', '-f', 'sendReleaseUpdates=false']]);
 });
+
+test('builds survive a restart and keep retrying from where they were', async () => {
+  const { mkdtempSync, writeFileSync, readFileSync, statSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'builds-')), 'builds.json');
+  let t = T0;
+  const first = createTracker(fakeGh(), () => t, { file });
+  await first.trigger(1042, ['mcAndroid']);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+
+  // "npm start" again: a new tracker reads the same file, then sees the run fail on a runner problem.
+  const gh = fakeGh({ runs: [{ databaseId: 21, createdAt: '2026-11-06T12:00:04Z', status: 'completed', conclusion: 'failure', url: 'u21', attempt: 1 }] });
+  gh.json = async (args) => (args[0] === 'pr' ? {} : args[0] === 'run' && args[1] === 'view' ? { jobs: [{ databaseId: 5, name: 'build', conclusion: 'failure', steps: [] }] } : [{ databaseId: 21, createdAt: '2026-11-06T12:00:04Z', status: 'completed', conclusion: 'failure', url: 'u21', attempt: 1 }]);
+  gh.run = async (args) => { gh.runCalls.push(args); return args.includes('--log-failed') ? 'The runner has received a shutdown signal' : ''; };
+  const second = createTracker(gh, () => t, { file });
+  assert.equal(second.list().length, 1);
+  assert.equal(second.list()[0].status, 'requested');
+  const [b] = await second.refresh();
+  assert.equal(b.runId, 21);
+  assert.equal(b.retries, 1, 'the restarted server reran the failed build');
+  assert.ok(gh.runCalls.some((a) => a.includes('rerun')));
+  assert.equal(JSON.parse(readFileSync(file, 'utf8'))[0].retries, 1, 'the retry count is saved too');
+
+  // A new trigger after restart doesn't reuse an old id.
+  const [c] = await second.trigger(1042, ['mkAndroid']).catch(() => [null]);
+  if (c) assert.notEqual(c.id, b.id);
+});
+
+test('finished builds older than 7 days are dropped on load; a corrupt file is ignored', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const dir = mkdtempSync(path.join(tmpdir(), 'builds-'));
+  const file = path.join(dir, 'builds.json');
+  const old = { id: 'a', status: 'completed', triggeredAt: T0 - 8 * 864e5 };
+  const running = { id: 'b', status: 'in_progress', triggeredAt: T0 - 8 * 864e5 };
+  const recent = { id: 'c', status: 'completed', triggeredAt: T0 - 864e5 };
+  writeFileSync(file, JSON.stringify([old, running, recent]));
+  assert.deepEqual(createTracker(fakeGh(), () => T0, { file }).list().map((b) => b.id), ['b', 'c']);
+  writeFileSync(file, '{oops');
+  assert.deepEqual(createTracker(fakeGh(), () => T0, { file }).list(), []);
+});

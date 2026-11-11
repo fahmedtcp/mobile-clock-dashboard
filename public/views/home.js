@@ -45,37 +45,67 @@ function greeting() {
   return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
 }
 
-function tile({ target, go, look, n, label, foot = '', tone = '' }) {
-  return el('button', { type: 'button', class: 'tile', onclick: () => (go ? ctx.go(go) : $(target)?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })) },
-    el('div', { class: 'tile-top' }, glyph(look[0], look[1]), el('span', { class: 'chev' }, icon('chevron'))),
-    el('div', {}, el('div', { class: 'tile-n' }, n), el('div', { class: 'tile-l' }, label)),
-    el('div', { class: `tile-foot ${tone}` }, foot));
+const scrollTo = (id) => $(id)?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+
+// One compact, tappable number with its own color. Tinted when it needs you, muted at zero, pulsing while live.
+function metric(n, label, { onclick, look, alert = false, live = false }) {
+  const state = n === '0' || n === '–' ? 'zero' : alert ? 'alert' : 'has';
+  return el('button', { type: 'button', class: `metric ${state} ${live ? 'live' : ''} g-${look[1]}`, onclick, 'aria-label': `${n} ${label}` },
+    el('span', { class: 'metric-icon' }, icon(look[0])),
+    el('span', { class: 'metric-in' }, el('b', {}, n), label));
+}
+
+// Up Next: the few things that need you right now, each with the one button that does it.
+function upNext() {
+  const { shared } = ctx;
+  const mine = shared.prs.filter((p) => p.author === shared.login && !p.isDraft);
+  const items = [];
+  for (const pr of mine) {
+    if (pr.ticket?.status === 'Dev Review') items.push({ look: ['team', 'purple'], title: `Ask QA to test ${pr.ticket.key}`, sub: pr.ticket.summary, label: 'Request QA Review', run: () => requestQa(pr) });
+    else if (pr.approved) items.push({ look: ['hammer', 'indigo'], title: `Build #${pr.number}`, sub: pr.title, label: 'Build', primary: true, run: () => openBuildSheet(pr) });
+    else if (!pr.reviewRequestedLogins.length && pr.reviewDecision !== 'CHANGES_REQUESTED') items.push({ look: ['team', 'blue'], title: `Get a review for #${pr.number}`, sub: pr.title, label: 'Request Review', run: () => requestReview(pr) });
+  }
+  for (const pr of shared.prs.filter((p) => p.reviewRequestedLogins.includes(shared.login)).slice(0, 2)) {
+    items.push({ look: ['pr', 'blue'], title: `Review #${pr.number} for ${pr.author}`, sub: pr.title, label: 'Open', run: () => window.open(pr.url, '_blank', 'noopener') });
+  }
+  const failed = shared.builds.filter((x) => x.status === 'completed' && ['failure', 'timed_out', 'startup_failure'].includes(x.conclusion));
+  if (failed.length) items.unshift({ look: ['alert', 'red'], title: `${failed.length} build${failed.length === 1 ? '' : 's'} failed`, sub: failed[0].reason?.summary ?? 'See Triggered Builds for the reason', label: 'Show', run: () => scrollTo('builds-section') });
+  const days = shared.timePending?.count ?? 0;
+  if (days) items.push({ look: ['calendar', 'green'], title: `Confirm ${days} day${days === 1 ? '' : 's'} of hours`, sub: 'So nothing piles up for Tempo', label: 'Open Time', run: () => ctx.go('time') });
+  return items.slice(0, 6);
 }
 
 function renderHero() {
   const { shared } = ctx;
   const mine = shared.prs.filter((p) => p.author === shared.login);
-  const approved = mine.filter((p) => p.approved).length;
-  const reviewing = shared.prs.filter((p) => p.reviewRequestedLogins.includes(shared.login)).length;
   const active = shared.builds.filter((b) => b.status !== 'completed').length;
-  const failed = shared.builds.filter((b) => b.status === 'completed' && ['failure', 'timed_out', 'startup_failure'].includes(b.conclusion)).length;
-  const devReview = local.tickets.filter((t) => t.status === 'Dev Review').length;
   const tsLast = local.ts.last;
   const first = (shared.displayName || '').split(' ')[0];
   const n = (v, loaded) => (loaded ? String(v) : '–');
+  const days = shared.timePending?.count;
+
+  $('home-head').replaceChildren(el('div', {},
+    el('div', { class: 'page-title' }, 'Today'),
+    el('div', { class: 'page-sub' }, `${greeting()}${first ? `, ${first}` : ''} · ${new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}`)));
+
+  const next = upNext();
+  const list = el('ul', { class: 'group upnext' }, next.length
+    ? next.map((it) => el('li', {}, el('div', { class: 'row' }, glyph(it.look[0], it.look[1]),
+        el('div', { class: 'row-body' }, el('div', { class: 'row-title' }, it.title), it.sub && el('div', { class: 'row-sub' }, el('span', { class: 'clip' }, it.sub))),
+        el('div', { class: 'row-trail' }, el('button', { type: 'button', class: `btn btn-small ${it.primary ? 'btn-filled' : ''}`, onclick: it.run }, it.label)))))
+    : [empty('check', 'You\'re all caught up', shared.prsLoaded ? 'Nothing needs you right now.' : 'Loading…', 'green')]);
+  list.style.setProperty('--inset', '56px');
 
   $('hero').replaceChildren(
-    el('div', {},
-      el('div', { class: 'greeting' }, `${greeting()}${first ? `, ${first}` : ''}`),
-      el('div', { class: 'greeting-sub' }, new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }),
-        local.alerts.length ? ` · ${local.alerts.length} thing${local.alerts.length === 1 ? '' : 's'} need${local.alerts.length === 1 ? 's' : ''} attention` : ' · All clear')),
-    el('div', { class: 'tiles' },
-      tile({ target: 'prs-section', look: ['pr', 'blue'], n: n(mine.length, shared.prsLoaded), label: 'My Pull Requests', foot: approved ? `${approved} approved` : reviewing ? `${reviewing} to review` : '', tone: approved ? 'good' : '' }),
-      tile({ target: 'builds-section', look: ['hammer', 'indigo'], n: String(active), label: 'Builds Running', foot: failed ? `${failed} failed` : shared.builds.length ? `${shared.builds.length} today` : 'None started', tone: failed ? 'warn' : '' }),
-      tile({ target: 'alerts-section', look: ['alert', local.alerts.length ? 'orange' : 'green'], n: String(local.alerts.length), label: 'Needs Attention', foot: local.alerts.length ? 'Tap to review' : 'Nothing flagged', tone: local.alerts.length ? 'warn' : 'good' }),
-      tile({ target: 'tickets-section', look: ['ticket', 'purple'], n: n(local.tickets.length, local.ticketsLoaded), label: 'My Tickets', foot: devReview ? `${devReview} in Dev Review` : '' }),
-      tile({ target: 'runs-section', look: ['chart', 'teal'], n: tsLast ? tsLast.count.toLocaleString() : '–', label: 'TS Errors on develop', foot: tsLast ? ago(tsLast.at) : 'Not counted yet' }),
-      tile({ go: 'time', look: ['calendar', shared.timePending?.count ? 'green' : 'gray'], n: String(shared.timePending?.count ?? '–'), label: 'Days to Confirm', foot: shared.timePending?.count ? 'Open Time' : 'All caught up', tone: shared.timePending?.count ? 'warn' : 'good' })));
+    el('div', { class: 'metrics', role: 'group', 'aria-label': 'Summary' },
+      metric(n(mine.length, shared.prsLoaded), mine.length === 1 ? 'pull request' : 'pull requests', { onclick: () => scrollTo('prs-section'), look: ['pr', 'blue'] }),
+      metric(String(active), 'building', { onclick: () => scrollTo('builds-section'), look: ['hammer', 'indigo'], live: active > 0 }),
+      metric(String(local.alerts.length), 'flagged', { onclick: () => scrollTo('alerts-section'), look: ['alert', 'orange'], alert: true }),
+      metric(n(local.tickets.length, local.ticketsLoaded), local.tickets.length === 1 ? 'ticket' : 'tickets', { onclick: () => scrollTo('tickets-section'), look: ['ticket', 'purple'] }),
+      metric(tsLast ? tsLast.count.toLocaleString() : '–', 'TS errors', { onclick: () => ctx.go('quality'), look: ['chart', 'teal'] }),
+      metric(String(days ?? '–'), days === 1 ? 'day to confirm' : 'days to confirm', { onclick: () => ctx.go('time'), look: ['calendar', 'green'], alert: true })),
+    el('div', { class: 'section-head' }, el('div', { class: 'section-title' }, el('h3', {}, 'Up Next'))),
+    list);
 }
 
 // ---------- alerts ----------
@@ -594,6 +624,7 @@ export default {
     ctx = appCtx;
     let branchTimer;
     container.append(
+      el('div', { class: 'page-head', id: 'home-head' }),
       el('section', { id: 'hero', class: 'hero', 'aria-label': 'Today' }),
       section('alerts', 'Needs Attention', ['alert', 'orange'], segmented('Alert scope', [['mine', 'Mine'], ['team', 'Team']], local.alertScope, (v) => { local.alertScope = v; local.alertsAt = 0; loadSlow(); })),
       section('builds', 'Triggered Builds', ['hammer', 'indigo'], el('span', { class: 'hint', id: 'retry-hint' })),

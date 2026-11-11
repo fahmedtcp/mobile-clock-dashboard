@@ -46,13 +46,13 @@ function flushDrafts() {
   return Promise.all(dates.map((d) => saveDraft(d)));
 }
 
-async function load(ym = local.ym) {
+async function load(ym = local.ym, { fresh = false } = {}) {
   await flushDrafts();
   local.ym = ym;
   local.error = null;
   render();
   try {
-    local.month = await api(`/api/time/month?ym=${ym}`);
+    local.month = await api(`/api/time/month?ym=${ym}${fresh ? '&fresh=1' : ''}`);
     local.edits.clear();
     if (!local.selected || !local.selected.startsWith(ym)) local.selected = defaultDay();
   } catch (err) {
@@ -220,6 +220,36 @@ async function sendToTempo(dates) {
   });
 }
 
+// ---------- refresh ----------
+
+async function refreshDay(date) {
+  const d = serverDay(date);
+  const unsaved = local.edits.has(date);
+  const draft = d.state === 'tempo' ? Boolean(d.flags?.length) || unsaved : d.state !== 'confirmed' && (!d.suggested || unsaved);
+  if (draft) {
+    const ok = await confirmSheet({
+      title: 'Refresh This Day?',
+      body: [el('p', {}, `Your unconfirmed changes for ${longDate(date)} are replaced with fresh suggestions.`)],
+      confirmLabel: 'Refresh',
+    });
+    if (!ok) return;
+  }
+  clearTimeout(local.saveTimers.get(date));
+  local.saveTimers.delete(date);
+  local.edits.delete(date);
+  local.refreshing = date;
+  render();
+  try {
+    if (draft) await post(`/api/time/day/${date}/reset`);
+    await load(local.ym, { fresh: true });
+    toast(d.state === 'confirmed' ? 'Refreshed. Confirmed hours stay as they are.' : 'Refreshed with the latest activity');
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
+  local.refreshing = null;
+  render();
+}
+
 // ---------- copy / export ----------
 
 function dayText(date) {
@@ -264,6 +294,23 @@ function stepper(value, { onMinus, onPlus, label, minusDisabled = false, plusDis
     el('button', { type: 'button', class: 'step', 'aria-label': `Less ${label}`, disabled: minusDisabled, onclick: onMinus }, '−'),
     el('span', { class: 'step-v' }, `${fmt(value)}h`),
     el('button', { type: 'button', class: 'step', 'aria-label': `More ${label}`, disabled: plusDisabled, onclick: onPlus }, '+'));
+}
+
+// Tickets with weak evidence: offered, never added on their own. Adding one works like "Add a ticket".
+function maybeList(date, d, used) {
+  const items = (d.maybe ?? []).filter((m) => !used.has(m.key));
+  if (!items.length || d.state === 'future') return null;
+  const list = el('ul', { class: 'group' }, items.map((m) => el('li', {},
+    el('div', { class: 'row' }, glyph('ticket', 'gray'),
+      el('div', { class: 'row-body' },
+        el('div', { class: 'row-title' }, m.url ? ext(m.url, m.key) : m.key, m.summary ? el('span', { class: 'time-summary' }, ` ${m.summary}`) : null),
+        el('div', { class: 'row-sub' }, m.evidence)),
+      el('div', { class: 'row-trail' },
+        el('button', { type: 'button', class: 'btn btn-small', 'aria-label': `Add ${m.key}`, onclick: () => edit(date, (x) => { x.removed = x.removed.filter((k) => k !== m.key); x.entries.push({ key: m.key, hours: STEP, manual: false }); }) }, '+ Add'))))));
+  list.style.setProperty('--inset', '56px');
+  return el('div', { class: 'maybe' },
+    el('div', { class: 'maybe-head' }, el('span', { class: 'maybe-title' }, 'Maybe'), el('span', { class: 'muted' }, d.state === 'tempo' ? 'Not in Tempo. Add any you worked on, then add it in Tempo too.' : 'Some activity, not enough to suggest. Add any you worked on.')),
+    list);
 }
 
 function dayCard() {
@@ -347,12 +394,14 @@ function dayCard() {
 
   return el('section', { class: 'block' },
     el('div', { class: 'day-head' },
-      el('div', {}, el('h3', { class: 'day-title' }, longDate(date)), el('span', { class: `chip ${color}` }, label), d.suggested && d.entries.length > 0 && !local.edits.has(date) && el('span', { class: 'chip blue' }, icon('sparkle'), 'Suggested')),
+      el('div', {}, el('h3', { class: 'day-title' }, longDate(date)), el('span', { class: `chip ${color}` }, label), d.suggested && d.entries.length > 0 && !local.edits.has(date) && el('span', { class: 'chip blue' }, icon('sparkle'), 'Suggested'),
+        el('button', { type: 'button', class: 'btn btn-small day-refresh', disabled: local.refreshing === date, title: 'Read Jira, git, GitHub, Claude, and Tempo again for this day', onclick: () => refreshDay(date) }, icon('refresh'), local.refreshing === date ? 'Refreshing…' : 'Refresh')),
       el('div', { class: 'day-total' },
         el('span', { class: `total ${ok ? 'ok' : sum === 0 ? 'unset' : 'off'}` }, `${fmt(sum)}`, el('span', { class: 'of' }, ` / ${fmt(target)}h`)),
         el('div', { class: 'total-bar', 'aria-hidden': 'true' }, el('span', { style: `width:${Math.min(100, target ? (sum / target) * 100 : 100)}%` })))),
     tempoNote,
     list,
+    maybeList(date, d, used),
     el('div', { class: 'day-actions' },
       el('div', { class: 'left' },
         select,

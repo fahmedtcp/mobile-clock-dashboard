@@ -41,12 +41,28 @@ A `.env` file in this folder still works as a fallback. Anything set in Settings
 
 Changes apply right away, with no restart.
 
+## Use It Like a Mac App
+
+1. Run `npm run install-app` once. The dashboard starts now and every time you log in, and restarts by itself if it stops. Reminders and build retries keep running with no browser tab open.
+2. Install the page as an app, so it gets its own window and a Dock icon:
+   - **Chrome:** ⋮ menu → Cast, save, and share → Install page as app… (or the install icon in the address bar)
+   - **Edge:** ⋯ menu → Apps → Install this site as an app
+   - **Safari:** File → Add to Dock
+
+- `npm run app-status` shows whether it is running. Logs are in `data/logs/server.log`.
+- `npm run uninstall-app` removes the login item.
+- After `git pull`, restart it with `npm run install-app` again.
+- If Node moves (for example after a version upgrade), run `npm run install-app` again.
+- Running `npm start` while it is already running just opens the running copy, so nothing runs twice.
+
 ## Usage
 
 ```bash
 npm start   # starts the server and opens http://localhost:4317
 npm test    # runs the test suite
 ```
+
+Press **⌘K** anywhere to search: jump to a view, open a pull request, check which build has a ticket (type its key), or switch theme. Number keys 1–5 switch views, `,` opens Settings, `/` jumps to the build lookup, and `t` opens Time.
 
 Set `NO_OPEN=1` to start without opening a browser tab. Link straight to a view with `#home`, `#release`, `#quality`, or `#team`.
 
@@ -80,6 +96,8 @@ Set `NO_OPEN=1` to start without opening a browser tab. Link straight to a view 
   - Git: your non-merge commits in the local `mobile-clock` clone (a ticket key in the commit message beats the branch name)
   - GitHub: builds you started (0.5 each, up to 1 per ticket per day; re-runs don't count again) and your reviews of other people's PRs (1 each, up to 2), matched to the ticket by branch name. GitHub keeps run history for about 90 days.
   - Claude Code sessions: the ticket each session mentions most, weighted toward what you typed and what Claude did, never injected memory or system text
+- **Maybe:** under each day, up to 4 tickets with some activity but not enough to suggest. Examples: a teammate ticket you reviewed or built, a ticket past the 5-per-day limit, or one mentioned in Claude sessions without being the main topic. **+ Add** puts one on the day. On a day already in Tempo, it gets flagged so you add it in Tempo too. Epics are never offered.
+- **Refresh** on a day reads every source again. Unconfirmed changes are replaced with fresh suggestions, after asking first. Confirmed days keep their hours.
 - Each suggestion shows its evidence, for example `4 commits · 1h 40m in Claude · In Progress`
 - Adjust with − and +; the other tickets rebalance to keep the day at 7h. Add leave as a half day, a full day, or any 0.5h step, and ticket hours fill the rest.
 - **Confirm Day** saves the day locally. **Copy Day** gives text ready to paste into Tempo.
@@ -136,7 +154,7 @@ Each one asks for confirmation first and is checked again on the server.
 - The server listens on `127.0.0.1` only and rejects requests from other sites.
 - Build inputs and branches come from the server and GitHub, never from the browser.
 - Ticket keys are validated before any Jira query.
-- Triggered builds are tracked in memory, so restarting the server clears that list.
+- Triggered builds are saved in `data/builds.json`, so a restart keeps watching and retrying them. Finished builds drop off after 7 days.
 
 ## Later (Needs Credentials or Setup)
 

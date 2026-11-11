@@ -27,7 +27,7 @@ import { createTracker, BuildRequestError } from './lib/builds.js';
 import { listRuns, rerunFailed, cancelRun, statusStrip, getLogin } from './lib/runs.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png' };
 
 function send(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -181,38 +181,46 @@ export function createServer(options) {
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const gh = createGh();
-  const tracker = createTracker(gh);
+  const tracker = createTracker(gh, undefined, { file: path.join(DATA_DIR, 'builds.json') });
   const ts = tsbudget.createTsBudget({ repoPath: () => LOCAL.mobileClockPath, cacheDir: CACHE_DIR, historyFile: path.join(DATA_DIR, 'ts-history.json') });
   const server = createServer({ gh, tracker, behind: createBehindCache(gh), ts });
-  // TypeScript error count on develop: at most once a day, checked hourly.
-  const tsDaily = () => { if (ts.isStale()) ts.runDevelop(); };
-  tsDaily();
-  setInterval(tsDaily, 3600000);
-  // Keep the dashboard's own Claude summaries, so Claude's 30-day log cleanup doesn't lose history.
-  const snap = () => claudeSnapshot(CLAUDE_PROJECTS_DIR, TIME_DIR).catch((err) => console.error('Claude snapshot failed:', err.message));
-  snap();
-  setInterval(snap, 3600000);
-  const { ctx } = server;
-  migrateDayHours(ctx.settings, ctx.timeStore);
-  applySettings(ctx);
-  startReminders({
-    timeDir: TIME_DIR,
-    reminderAt: () => reminderSetting(TIME),
-    // A day already in Tempo counts as confirmed, so no reminder for it.
-    store: { get: (d) => (ctx.tempoLogged.get(d.slice(0, 7))?.has(d) ? { status: 'confirmed', leaveHours: 0 } : ctx.timeStore.get(d)) },
-    pendingDays: ctx.timePending,
-    summarize: async (day) => {
-      const d = (await ctx.timeMonth(day.slice(0, 7))).days.find((x) => x.date === day);
-      return { tickets: d?.entries.length ?? 0, hours: d?.entries.reduce((a, e) => a + e.hours, 0) ?? 0 };
-    },
+  const url = `http://localhost:${PORT}`;
+  // Already running (for example, started at login by install-app): open that one instead of a second copy,
+  // so background jobs, reminders, and build retries never run twice.
+  server.on('error', (err) => {
+    if (err.code !== 'EADDRINUSE') throw err;
+    console.log(`Dashboard is already running at ${url}`);
+    if (!process.env.NO_OPEN) execFile('open', [url], () => process.exit(0)); else process.exit(0);
   });
-  // Keep watching (and auto-retrying) triggered builds even when no tab is open.
-  setInterval(() => {
-    if (tracker.list().some((b) => b.status !== 'completed')) tracker.refresh().catch((err) => console.error('Build refresh failed:', err.message));
-  }, BACKGROUND_REFRESH_MS);
   server.listen(PORT, HOST, () => {
-    const url = `http://localhost:${PORT}`;
     console.log(`Dashboard running at ${url}`);
     if (!process.env.NO_OPEN) execFile('open', [url], () => {});
+    // Background jobs start only once this process owns the port.
+    // TypeScript error count on develop: at most once a day, checked hourly.
+    const tsDaily = () => { if (ts.isStale()) ts.runDevelop(); };
+    tsDaily();
+    setInterval(tsDaily, 3600000);
+    // Keep the dashboard's own Claude summaries, so Claude's 30-day log cleanup doesn't lose history.
+    const snap = () => claudeSnapshot(CLAUDE_PROJECTS_DIR, TIME_DIR).catch((err) => console.error('Claude snapshot failed:', err.message));
+    snap();
+    setInterval(snap, 3600000);
+    const { ctx } = server;
+    migrateDayHours(ctx.settings, ctx.timeStore);
+    applySettings(ctx);
+    startReminders({
+      timeDir: TIME_DIR,
+      reminderAt: () => reminderSetting(TIME),
+      // A day already in Tempo counts as confirmed, so no reminder for it.
+      store: { get: (d) => (ctx.tempoLogged.get(d.slice(0, 7))?.has(d) ? { status: 'confirmed', leaveHours: 0 } : ctx.timeStore.get(d)) },
+      pendingDays: ctx.timePending,
+      summarize: async (day) => {
+        const d = (await ctx.timeMonth(day.slice(0, 7))).days.find((x) => x.date === day);
+        return { tickets: d?.entries.length ?? 0, hours: d?.entries.reduce((a, e) => a + e.hours, 0) ?? 0 };
+      },
+    });
+    // Keep watching (and auto-retrying) triggered builds even when no tab is open.
+    setInterval(() => {
+      if (tracker.list().some((b) => b.status !== 'completed')) tracker.refresh().catch((err) => console.error('Build refresh failed:', err.message));
+    }, BACKGROUND_REFRESH_MS);
   });
 }
