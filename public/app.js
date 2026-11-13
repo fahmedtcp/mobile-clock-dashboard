@@ -238,7 +238,7 @@ document.addEventListener('keydown', (e) => {
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName)) return;
   const viewNumber = Number(e.key);
   if (viewNumber >= 1 && viewNumber <= VIEWS.length) { e.preventDefault(); show(VIEWS[viewNumber - 1].id); }
-  if (e.key === '/') { e.preventDefault(); show('home'); $('lookup-input')?.focus(); }
+  if (e.key === '/') { e.preventDefault(); show('home'); $('home-more')?.setAttribute('open', ''); $('lookup-input')?.focus(); }
   if (e.key === 't') { e.preventDefault(); show('time'); }
   if (e.key === ',') { e.preventDefault(); show('settings'); }
 });

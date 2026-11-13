@@ -47,3 +47,36 @@ export function rebalance(entries, target) {
   const spread = new Map(allocate(weights, left, auto.length).map((x) => [x.key, x.hours]));
   return entries.flatMap((e) => (e.manual ? [e] : spread.has(e.key) ? [{ ...e, hours: spread.get(e.key) }] : []));
 }
+
+// ---------- shift clock (server and page share it, so the shift line ticks without a refetch) ----------
+
+const START_MOMENT_MS = 60 * 60000; // the first hour of a shift is its "start"
+const MINUTE = 60000;
+
+function atTime(day, hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date(day);
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
+
+// Where `now` sits in the shift { start: 'HH:MM', end: 'HH:MM', wrapMinutes } (same-day shifts, weekdays).
+// Before the shift reads as "start", after it (until midnight) as "wrap"; weekends read as "mid" with no shift.
+export function shiftState(now, { start, end, wrapMinutes }) {
+  const shiftStart = atTime(now, start);
+  const shiftEnd = atTime(now, end);
+  const prevShiftEnd = new Date(shiftEnd);
+  while (isWeekend(prevShiftEnd) || prevShiftEnd > now) prevShiftEnd.setDate(prevShiftEnd.getDate() - 1);
+  const base = { shiftStart, shiftEnd, prevShiftEnd, startsInMinutes: null };
+  if (isWeekend(now)) return { ...base, moment: 'mid', phase: 'weekend', progress: 0, minutesLeft: 0 };
+  if (now < shiftStart) {
+    return { ...base, moment: 'start', phase: 'before', progress: 0, minutesLeft: 0,
+      startsInMinutes: Math.ceil((shiftStart - now) / MINUTE) };
+  }
+  if (now >= shiftEnd) return { ...base, moment: 'wrap', phase: 'after', progress: 1, minutesLeft: 0 };
+  const minutesLeft = Math.floor((shiftEnd - now) / MINUTE);
+  const progress = Math.round(((now - shiftStart) / (shiftEnd - shiftStart)) * 1000) / 1000;
+  const moment = now - shiftStart < START_MOMENT_MS ? 'start' : minutesLeft <= wrapMinutes ? 'wrap' : 'mid';
+  return { ...base, moment, phase: 'during', progress, minutesLeft };
+}

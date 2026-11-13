@@ -1,18 +1,19 @@
 import {
-  $, api, post, el, ext, ago, duration, statusOf, statusChip, ticketChip, placeholder, sep, showError, confirmSheet,
+  $, api, post, put, el, ext, ago, duration, statusOf, statusChip, ticketChip, placeholder, sep, showError, confirmSheet,
   toast, section, icon, glyph, avatar, skeleton, empty, sectionFreshness,
 } from '../ui.js';
-import { registerTicketActions, buildChip, loadLatestBuilds, ticketLink } from '../tickets-ui.js';
+import { registerTicketActions, buildChip, loadLatestBuilds, openTicketPanel } from '../tickets-ui.js';
+import {
+  heroCard, shiftLine, nowOf, workCard, feedCard, waitingCard, todayCard, planCard, standupCard, wrapCard, noteCard,
+} from './home-cards.js';
 import { submitState, behindStale } from '../notify.js';
-import { branchName, TICKET_KEY } from '../shared.js';
+import { branchName, TICKET_KEY, shiftState } from '../shared.js';
 
 let ctx;
 const local = {
   prTab: 'mine',
-  alertScope: 'mine',
-  alerts: [], alertsError: null, alertsAt: 0,
-  tickets: [], ticketsError: null, ticketsAt: 0, ticketsLoaded: false,
-  loadedAt: { alerts: 0, tickets: 0 }, // when each last loaded successfully (freshness labels)
+  home: null, homeError: null, homeAt: 0, // /api/home: hero, My Work, feed, shift cards
+  seenTimer: null,
   behind: new Map(),
   ai: new Map(),        // pr number -> { loading } | { summary, inlineCount } | { error }
   ts: { prResults: {} },
@@ -20,7 +21,9 @@ const local = {
   openReasons: new Set(),
   workflows: new Set(),
 };
-const SLOW_MS = 120000; // alerts and my tickets refresh every 2 minutes
+const SLOW_MS = 60000; // /api/home refreshes every minute (the server caches it for 30 s)
+const SHIFT_TICK_MS = 30000;
+const SEEN_AFTER_MS = 5000; // the feed counts as read once it has been on screen this long
 const POLL_MS = 60000; // the shared loop's idle pace (pollDelay in notify.js)
 const FAILED_CONCLUSIONS = ['failure', 'timed_out', 'startup_failure'];
 
@@ -32,192 +35,128 @@ const linkButton = (href, label) => ext(href, el('span', { class: 'btn btn-small
 
 // ---------- data the shared loop doesn't cover ----------
 
-function loadAlerts() {
-  return api(`/api/alerts?scope=${local.alertScope}`).then(
-    (alerts) => { local.alerts = alerts; local.alertsError = null; local.loadedAt.alerts = Date.now(); },
-    (err) => { local.alertsError = err; },
-  );
-}
-
-function loadTickets() {
-  return api('/api/tickets/mine').then(
-    (tickets) => {
-      Object.assign(local, { tickets, ticketsError: null, ticketsLoaded: true });
-      local.loadedAt.tickets = Date.now();
-    },
-    (err) => { local.ticketsError = err; local.ticketsLoaded = true; },
+function loadHome(fresh) {
+  return api(`/api/home${fresh ? '?fresh=1' : ''}`).then(
+    (home) => { local.home = { ...home, fetchedAt: Date.now() }; local.homeError = null; },
+    (err) => { local.homeError = err; },
   );
 }
 
 async function loadSlow(force = false) {
   const now = Date.now();
   const jobs = [];
-  if (force || now - local.alertsAt > SLOW_MS) {
-    local.alertsAt = now;
-    jobs.push(loadAlerts());
-  }
-  if (force || now - local.ticketsAt > SLOW_MS) {
-    local.ticketsAt = now;
-    jobs.push(loadTickets());
+  if (force || now - local.homeAt > SLOW_MS) {
+    local.homeAt = now;
+    jobs.push(loadHome(force));
   }
   jobs.push(api('/api/ts').then((tsResult) => { local.ts = tsResult.status; }, () => {}));
   await Promise.all(jobs);
   render();
 }
 
-// The Jira banner already explains Jira outages; don't repeat them per section.
-const jiraProblem = (err) => Boolean(err) && (err.status === 503 || ctx.shared.jiraOk === false);
+// ---------- shift-aware cards ----------
 
-// ---------- Today hero ----------
-
-function greeting() {
-  const h = new Date().getHours();
-  return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
-}
-
-const scrollTo = (id) => $(id)?.scrollIntoView({
-  behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-  block: 'start',
-});
-
-// One compact, tappable number with its own color. Tinted when it needs you, muted at zero, pulsing while live.
-function metric(n, label, { onclick, look, alert = false, live = false }) {
-  const state = n === '0' || n === '–' ? 'zero' : alert ? 'alert' : 'has';
-  const className = `metric ${state} ${live ? 'live' : ''} g-${look[1]}`;
-  return el('button', { type: 'button', class: className, onclick, 'aria-label': `${n} ${label}` },
-    el('span', { class: 'metric-icon' }, icon(look[0])),
-    el('span', { class: 'metric-in' }, el('b', {}, n), label));
-}
-
-// The single most useful next step for one of my own (non-draft) PRs, if any.
-function nextStepForMyPr(pr) {
-  if (pr.ticket?.status === 'Dev Review') {
-    return {
-      look: ['team', 'purple'], title: `Ask QA to test ${pr.ticket.key}`, sub: pr.ticket.summary,
-      label: 'Request QA Review', run: () => requestQa(pr),
-    };
+// Every button on the new cards sends one of these; the sheets below do the real work.
+function act(action) {
+  const prByNumber = (n) => ctx.shared.prs.find((p) => p.number === n);
+  switch (action.kind) {
+    case 'open-url': window.open(action.url, '_blank', 'noopener'); break;
+    case 'open-ticket': openTicketPanel(action.key); break;
+    case 'request-qa': {
+      const row = local.home?.work.find((r) => r.key === action.key);
+      requestQa({ ticket: { key: action.key, summary: row?.summary ?? '', status: 'Dev Review' } });
+      break;
+    }
+    case 'build': {
+      const pr = prByNumber(action.pr);
+      if (pr) openBuildSheet(pr, action.keys); else toast(`#${action.pr} isn't in your open pull requests.`, 'bad');
+      break;
+    }
+    case 'update-branch': {
+      const pr = prByNumber(action.pr);
+      if (pr) mergeBase(pr, { base: pr.baseRefName });
+      break;
+    }
+    case 'start': {
+      const row = local.home?.work.find((r) => r.key === action.key);
+      startTicket({ key: action.key, summary: row?.summary ?? '', assignee: null });
+      break;
+    }
+    case 'rerun': post(`/api/runs/${action.runId}/rerun`).then(() => { toast('Rerun started', 'ok'); ctx.refresh(); }, (err) => toast(err.message, 'bad')); break;
+    case 'scroll': document.getElementById(action.target === 'builds' ? 'builds-section' : `hc-${action.target}`)?.scrollIntoView({ block: 'start' }); break;
+    case 'go': ctx.go(action.view); break;
+    case 'copy':
+      navigator.clipboard.writeText(action.text).then(
+        () => toast(action.done ?? 'Copied. Run it in your terminal.', 'ok'),
+        () => toast("Couldn't copy. Select the text instead.", 'bad'));
+      break;
+    default: break;
   }
-  if (pr.approved) {
-    return {
-      look: ['hammer', 'indigo'], title: `Build #${pr.number}`, sub: pr.title,
-      label: 'Build', primary: true, run: () => openBuildSheet(pr),
-    };
+}
+
+async function markSeen() {
+  clearTimeout(local.seenTimer);
+  await post('/api/home/seen').catch(() => {});
+  await loadHome(true);
+  render();
+}
+
+function saveNote(text) {
+  put('/api/home/note', { text }).then(({ note }) => {
+    if (local.home) local.home.note = note;
+    toast('Note saved', 'ok');
+  }, (err) => toast(err.message, 'bad'));
+}
+
+// Every 30 s: move the shift line; when the moment changes (start → mid → wrap), reload the cards.
+function tickShift() {
+  const home = local.home;
+  if (!home) return;
+  if (shiftState(nowOf(home), home.shift).moment !== home.shift.moment) { loadSlow(true); return; }
+  const line = shiftLine(home.shift, home.meetings, nowOf(home));
+  if (line) document.querySelector('.hero-card .shiftline')?.replaceWith(line);
+}
+
+function renderHome() {
+  // Never rebuild the cards under someone typing their note; it saves on blur and the next render catches up.
+  if (document.activeElement?.classList.contains('note-edit')) return;
+  const root = $('home-cards');
+  const { home } = local;
+  if (!home) {
+    root.replaceChildren(local.homeError
+      ? el('div', { class: 'banner error', role: 'alert' }, `Couldn't load Home: ${local.homeError.message}`)
+      : el('div', { class: 'hero-card' }, ...skeleton(3)));
+    return;
   }
-  if (!pr.reviewRequestedLogins.length && pr.reviewDecision !== 'CHANGES_REQUESTED') {
-    return {
-      look: ['team', 'blue'], title: `Get a review for #${pr.number}`, sub: pr.title,
-      label: 'Request Review', run: () => requestReview(pr),
-    };
+  const { moment } = home.shift;
+  const since = Date.parse(home.shift.prevShiftEnd);
+  const sinceShift = home.feed.filter((item) => Date.parse(item.at) > since);
+  const cards = [heroCard(home, act)];
+  if (moment === 'start') {
+    cards.push(noteCard(home.note, { editable: false }),
+      el('div', { class: 'hc-grid' },
+        feedCard(sinceShift, { id: 'feed', title: 'Since Last Shift', emptyText: 'Nothing changed since your last shift.' }),
+        home.calendar === 'ok' ? todayCard(home.shift, home.meetings) : null),
+      planCard(home.plan, act));
   }
-  return null;
-}
-
-// Up Next: the few things that need you right now, each with the one button that does it.
-function upNext() {
-  const { shared } = ctx;
-  const mine = shared.prs.filter((p) => p.author === shared.login && !p.isDraft);
-  const items = mine.map(nextStepForMyPr).filter(Boolean);
-  for (const pr of shared.prs.filter((p) => p.reviewRequestedLogins.includes(shared.login)).slice(0, 2)) {
-    items.push({
-      look: ['pr', 'blue'], title: `Review #${pr.number} for ${pr.author}`, sub: pr.title,
-      label: 'Open', run: () => window.open(pr.url, '_blank', 'noopener'),
-    });
+  cards.push(workCard(home.work, act, home.errors.jira));
+  if (moment === 'mid') {
+    cards.push(el('div', { class: 'hc-grid' },
+      feedCard(home.feed, { id: 'feed', title: 'Since You Last Looked', onMarkRead: markSeen, emptyText: 'Nothing new on your tickets or PRs.' }),
+      standupCard(home.standup, act)),
+    waitingCard(home.waiting, act));
   }
-  const failed = shared.builds.filter(isFinalFailure);
-  if (failed.length) {
-    items.unshift({
-      look: ['alert', 'red'], title: `${failed.length} ${plural(failed.length, 'build')} failed`,
-      sub: failed[0].reason?.summary ?? 'See Triggered Builds for the reason',
-      label: 'Show', run: () => scrollTo('builds-section'),
-    });
+  if (moment === 'wrap') {
+    cards.push(el('div', { class: 'hc-grid' },
+      wrapCard(home.wrap, act),
+      noteCard(home.note, { editable: true, onSave: saveNote })));
   }
-  const days = shared.timePending?.count ?? 0;
-  if (days) {
-    items.push({
-      look: ['calendar', 'green'], title: `Confirm ${days} ${plural(days, 'day')} of hours`,
-      sub: 'So nothing piles up for Tempo', label: 'Open Time', run: () => ctx.go('time'),
-    });
+  root.replaceChildren(...cards.filter(Boolean));
+  ctx.setBadge('home', home.work.filter((r) => r.tone === 'bad').length);
+  if (moment === 'mid' && home.feed.some((i) => i.unread)) {
+    clearTimeout(local.seenTimer);
+    local.seenTimer = setTimeout(() => { if (document.visibilityState === 'visible' && $('hc-feed')) post('/api/home/seen').catch(() => {}); }, SEEN_AFTER_MS);
   }
-  return items.slice(0, 6);
-}
-
-function renderPageHead() {
-  const first = (ctx.shared.displayName || '').split(' ')[0];
-  const date = new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  $('home-head').replaceChildren(el('div', {},
-    el('div', { class: 'page-title' }, 'Today'),
-    el('div', { class: 'page-sub' }, `${greeting()}${first ? `, ${first}` : ''} · ${date}`)));
-}
-
-function upNextRow(item) {
-  const buttonClass = `btn btn-small ${item.primary ? 'btn-filled' : ''}`;
-  return el('li', {},
-    el('div', { class: 'row' },
-      glyph(item.look[0], item.look[1]),
-      el('div', { class: 'row-body' },
-        el('div', { class: 'row-title' }, item.title),
-        item.sub && el('div', { class: 'row-sub' }, el('span', { class: 'clip' }, item.sub))),
-      el('div', { class: 'row-trail' },
-        el('button', { type: 'button', class: buttonClass, onclick: item.run }, item.label))));
-}
-
-function upNextList() {
-  const next = upNext();
-  const caughtUpText = ctx.shared.prsLoaded ? 'Nothing needs you right now.' : 'Loading…';
-  const list = el('ul', { class: 'group upnext' }, next.length
-    ? next.map(upNextRow)
-    : [empty('check', 'You\'re all caught up', caughtUpText, 'green')]);
-  list.style.setProperty('--inset', '56px');
-  return list;
-}
-
-function heroMetrics() {
-  const { shared } = ctx;
-  const mine = shared.prs.filter((p) => p.author === shared.login);
-  const active = shared.builds.filter((b) => b.status !== 'completed').length;
-  const tsLast = local.ts.last;
-  const countOrDash = (value, loaded) => (loaded ? String(value) : '–');
-  const days = shared.timePending?.count;
-  return el('div', { class: 'metrics', role: 'group', 'aria-label': 'Summary' },
-    metric(countOrDash(mine.length, shared.prsLoaded), mine.length === 1 ? 'pull request' : 'pull requests',
-      { onclick: () => scrollTo('prs-section'), look: ['pr', 'blue'] }),
-    metric(String(active), 'building',
-      { onclick: () => scrollTo('builds-section'), look: ['hammer', 'indigo'], live: active > 0 }),
-    metric(String(local.alerts.length), 'flagged',
-      { onclick: () => scrollTo('alerts-section'), look: ['alert', 'orange'], alert: true }),
-    metric(countOrDash(local.tickets.length, local.ticketsLoaded), local.tickets.length === 1 ? 'ticket' : 'tickets',
-      { onclick: () => scrollTo('tickets-section'), look: ['ticket', 'purple'] }),
-    metric(tsLast ? tsLast.count.toLocaleString() : '–', 'TS errors',
-      { onclick: () => ctx.go('quality'), look: ['chart', 'teal'] }),
-    metric(String(days ?? '–'), days === 1 ? 'day to confirm' : 'days to confirm',
-      { onclick: () => ctx.go('time'), look: ['calendar', 'green'], alert: true }));
-}
-
-function renderHero() {
-  renderPageHead();
-  const list = upNextList();
-  $('hero').replaceChildren(
-    heroMetrics(),
-    el('div', { class: 'section-head' }, el('div', { class: 'section-title' }, el('h3', {}, 'Up Next'))),
-    list);
-}
-
-// ---------- alerts ----------
-
-function alertRow(alert) {
-  return el('li', {},
-    el('div', { class: 'row' },
-      el('span', { class: 'alert-icon', 'aria-hidden': 'true' }, icon('alert')),
-      el('div', { class: 'row-body' }, el('div', {}, alert.text)),
-      el('div', { class: 'row-trail' }, linkButton(alert.url, 'Open'))));
-}
-
-function renderAlerts() {
-  const sec = $('alerts-section');
-  sec.hidden = !local.alerts.length && !local.alertsError;
-  showError($('alerts-error'), jiraProblem(local.alertsError) ? null : local.alertsError);
-  ctx.setBadge('home', local.alerts.length);
-  $('alerts').replaceChildren(...local.alerts.map(alertRow));
 }
 
 // ---------- triggered builds ----------
@@ -356,30 +295,6 @@ async function startTicket(ticket) {
   const assignedNote = started.assigned ? '; assigned to you' : '';
   toast(started.existed ? `${branch} already existed${assignedNote}` : `Created ${branch}`, 'ok');
   loadSlow(true);
-}
-
-function ticketRow(ticket) {
-  return el('li', {},
-    el('div', { class: 'row' },
-      el('div', { class: 'row-body' },
-        el('div', { class: 'row-title' }, ext(ticket.url, ticket.summary)),
-        el('div', { class: 'row-sub' },
-          ticketLink(ticket.key), buildChip(ticket.key),
-          ticket.fixVersions.length ? [sep(), el('span', {}, ticket.fixVersions.join(', '))] : null)),
-      el('div', { class: 'row-trail' },
-        ticketChip(ticket),
-        ['To Do', 'Open'].includes(ticket.status) && smallButton(() => startTicket(ticket), 'Start'))));
-}
-
-function renderTickets() {
-  const list = $('tickets');
-  showError($('tickets-error'), jiraProblem(local.ticketsError) ? null : local.ticketsError);
-  $('tickets-section').hidden = jiraProblem(local.ticketsError);
-  if (!local.ticketsLoaded) return list.replaceChildren(...skeleton(3));
-  if (!local.tickets.length) {
-    return list.replaceChildren(empty('check', 'No active tickets', 'Nothing assigned to you is in progress.'));
-  }
-  list.replaceChildren(...local.tickets.map(ticketRow));
 }
 
 // ---------- pull requests ----------
@@ -646,11 +561,11 @@ async function requestQa(pr) {
 
 // ---------- build sheet ----------
 
-function buildCheckboxes() {
+function buildCheckboxes(preselect = null) {
   const boxes = ctx.shared.buildConfig.map((config) => {
     const [platform, ...rest] = config.label.split(' ');
     return el('label', { class: 'choice' },
-      el('input', { type: 'checkbox', value: config.key, checked: config.defaultChecked !== false }),
+      el('input', { type: 'checkbox', value: config.key, checked: preselect ? preselect.includes(config.key) : config.defaultChecked !== false }),
       el('span', { class: 'choice-label' }, rest.join(' ')),
       el('span', { class: 'choice-platform' }, platform));
   });
@@ -679,8 +594,8 @@ function syncBuildButton(fieldset, checked) {
   };
 }
 
-async function openBuildSheet(pr) {
-  const fieldset = buildCheckboxes();
+async function openBuildSheet(pr, preselect = null) {
+  const fieldset = buildCheckboxes(preselect);
   const checked = () => [...fieldset.querySelectorAll('input:checked')].map((i) => i.value);
   let made = [];
   const ok = await confirmSheet({
@@ -989,24 +904,18 @@ function renderRuns() {
 // ---------- view ----------
 
 function render() {
-  renderHero();
-  renderAlerts();
+  renderHome();
   renderTriggered();
-  renderTickets();
   renderPrs();
   renderRuns();
   renderFreshness();
-  loadLatestBuilds([...local.tickets.map((t) => t.key), ...visiblePrs().map((pr) => pr.ticketKey)]);
+  loadLatestBuilds(visiblePrs().map((pr) => pr.ticketKey));
 }
 
 // "Updated N min ago" per section. Jira being off is the banner's job, so it doesn't turn these red.
 function renderFreshness() {
   const { shared } = ctx;
   const errors = ctx.errors ?? {};
-  const jiraError = (err) => (jiraProblem(err) ? null : err);
-  const reloadSlow = () => loadSlow(true);
-  sectionFreshness('alerts', { at: local.loadedAt.alerts, intervalMs: SLOW_MS, error: jiraError(local.alertsError), onRefresh: reloadSlow });
-  sectionFreshness('tickets', { at: local.loadedAt.tickets, intervalMs: SLOW_MS, error: jiraError(local.ticketsError), onRefresh: reloadSlow });
   sectionFreshness('builds', { at: shared.loadedAt.builds, intervalMs: POLL_MS, error: errors.prs, onRefresh: ctx.refresh });
   sectionFreshness('prs', { at: shared.loadedAt.prs, intervalMs: POLL_MS, error: errors.prs, onRefresh: ctx.refresh });
   sectionFreshness('runs', { at: shared.loadedAt.runs, intervalMs: POLL_MS, error: errors.runs, onRefresh: ctx.refresh });
@@ -1060,19 +969,16 @@ function runFilters() {
 }
 
 function homeSections() {
-  const alertScope = segmented('Alert scope', [['mine', 'Mine'], ['team', 'Team']], local.alertScope,
-    (scope) => { local.alertScope = scope; local.alertsAt = 0; loadSlow(); });
   const prFilter = segmented('Pull request filter', [['mine', 'Mine'], ['review', 'Review Requested']], local.prTab,
     (tab) => { local.prTab = tab; renderPrs(); });
   return [
-    el('div', { class: 'page-head', id: 'home-head' }),
-    el('section', { id: 'hero', class: 'hero', 'aria-label': 'Today' }),
-    section('alerts', 'Needs Attention', ['alert', 'orange'], alertScope),
+    el('div', { id: 'home-cards', class: 'home-cards' }),
     section('builds', 'Triggered Builds', ['hammer', 'indigo'], el('span', { class: 'hint', id: 'retry-hint' })),
-    section('tickets', 'My Tickets', ['ticket', 'purple']),
-    section('prs', 'My Pull Requests', ['pr', 'blue'], prFilter),
-    lookupSection(),
-    section('runs', 'Actions', ['bolt', 'teal'], runFilters()),
+    el('details', { class: 'more', id: 'home-more' },
+      el('summary', {}, 'More: Pull Requests, Build Lookup, and Actions'),
+      section('prs', 'Pull Requests', ['pr', 'blue'], prFilter),
+      lookupSection(),
+      section('runs', 'Actions', ['bolt', 'teal'], runFilters())),
   ];
 }
 
@@ -1087,11 +993,10 @@ export default {
     container.append(...homeSections());
     $('prs').classList.add('inset-avatar');
     $('builds').style.setProperty('--inset', '56px');
-    $('alerts').style.setProperty('--inset', '52px');
-    $('alerts-section').hidden = true;
     $('builds-section').hidden = true;
     render();
     loadSlow(true);
+    setInterval(tickShift, SHIFT_TICK_MS);
   },
   async refresh() { ctx.refresh(); await loadSlow(true); },
   update(shared, errors) {

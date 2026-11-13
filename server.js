@@ -8,6 +8,7 @@ import {
   CACHE_DIR, DATA_DIR, TIME_DIR, CLAUDE_PROJECTS_DIR,
 } from './config.js';
 import { createSettings } from './lib/settings.js';
+import { createCalendar } from './lib/calendar.js';
 import { connectionRoutes } from './lib/settings-test.js';
 import { createTempo } from './lib/time/tempo.js';
 import { snapshot as claudeSnapshot } from './lib/time/claude.js';
@@ -25,6 +26,7 @@ import * as simulator from './lib/simulator.js';
 import * as time from './lib/time/routes.js';
 import * as teams from './lib/teams.js';
 import * as ticketPanel from './lib/ticket-panel.js';
+import * as home from './lib/home/routes.js';
 import { createGh, GhError } from './lib/gh.js';
 import { getPr, createBehindCache, updateBranch } from './lib/prs.js';
 import { createTracker, BuildRequestError } from './lib/builds.js';
@@ -64,7 +66,7 @@ async function serveStatic(req, res) {
 }
 
 // Feature modules each export routes(ctx); later tasks append to this list.
-const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel];
+const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel, home];
 
 // No reminder until workday hours are set: there's nothing to confirm yet.
 export const reminderSetting = (time) => (time.reminderOn && time.dayHours != null ? time.reminderAt : 'off');
@@ -117,6 +119,9 @@ function createContext(options) {
     readJson,
     id,
     cacheDir: options.cacheDir ?? CACHE_DIR,
+    calendar: options.calendar ?? createCalendar({
+      cacheDir: options.cacheDir ?? CACHE_DIR, enabled: () => settings.resolved().calendar.on,
+    }),
     timeDir: options.timeDir ?? TIME_DIR,
     settings,
     injected: new Set(INJECTABLE.filter((k) => options[k])),

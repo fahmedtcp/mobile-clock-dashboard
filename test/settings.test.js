@@ -113,3 +113,26 @@ test('TEAMS_ALWAYS and TEAMS_PEOPLE parse from env; initial seeds memory setting
   assert.deepEqual(s.resolved().teams.people, { x: 'x@t.com' });
   assert.equal(s.resolved().time.dayHours, 7);
 });
+
+test('shift, calendar, and team settings: defaults and validation', () => {
+  const s = createSettings({ file: null, env: {} });
+  const r = s.resolved();
+  assert.deepEqual(r.shift, { start: '13:00', end: '22:00', wrapMinutes: 40 });
+  assert.deepEqual(r.calendar, { on: false });
+  assert.deepEqual(r.team, { people: [] });
+  const sana = { name: 'Sana', github: 'sana-q', jiraEmail: 's@x.co', qa: true };
+  const cases = [
+    [{ shift: { start: '22:00', end: '13:00' } }, 'Shift must end after it starts, on the same day.'],
+    [{ shift: { end: '12:00' } }, 'Shift must end after it starts, on the same day.'],
+    [{ shift: { start: '9am' } }, 'Use a time like 20:30.'],
+    [{ shift: { wrapMinutes: 5 } }, 'Wrap-up must be 15–120 minutes.'],
+    [{ calendar: { on: 'yes' } }, 'Expected on or off.'],
+    [{ team: { people: [{ ...sana, github: 'bad login!' }] } }, 'Each teammate needs a name, a GitHub login, and a Jira email.'],
+    [{ team: { people: [{ ...sana, name: '' }] } }, 'Each teammate needs a name, a GitHub login, and a Jira email.'],
+    [{ team: { people: Array.from({ length: 21 }, () => sana) } }, 'Up to 20 teammates.'],
+  ];
+  for (const [patch, msg] of cases) assert.deepEqual(status(() => s.update(patch)), [400, msg], JSON.stringify(patch));
+  s.update({ shift: { start: '09:00', end: '18:00', wrapMinutes: 30 }, calendar: { on: true }, team: { people: [sana] } });
+  assert.deepEqual(s.resolved().shift, { start: '09:00', end: '18:00', wrapMinutes: 30 });
+  assert.deepEqual(s.resolved().team.people, [sana]);
+});
