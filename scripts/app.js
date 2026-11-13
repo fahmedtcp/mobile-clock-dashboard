@@ -12,13 +12,14 @@ export const LABEL = 'com.tcpsoftware.mobile-clock-dashboard';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 4317;
 const URL_ = `http://localhost:${PORT}`;
+const SYSTEM_PATH = ['/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // launchd gives jobs a bare PATH; keep the user's own folders so gh, git, and node are found.
 export function jobPath(envPath, exists = existsSync) {
   const dirs = String(envPath ?? '').split(':').filter((d) => d && path.isAbsolute(d) && exists(d));
-  return [...new Set([...dirs, '/usr/local/bin', '/opt/homebrew/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'])].join(':');
+  return [...new Set([...dirs, ...SYSTEM_PATH])].join(':');
 }
 
 export function launchAgentPlist({ label = LABEL, node, server, cwd, envPath, log }) {
@@ -46,37 +47,27 @@ export function launchAgentPlist({ label = LABEL, node, server, cwd, envPath, lo
 `;
 }
 
-const run = (file, args) => new Promise((resolve) => execFile(file, args, (err, stdout, stderr) => resolve({ ok: !err, stdout, stderr })));
+const run = (file, args) => new Promise((resolve) => {
+  execFile(file, args, (err, stdout, stderr) => resolve({ ok: !err, stdout, stderr }));
+});
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const plistPath = () => path.join(os.homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 const domain = () => `gui/${process.getuid()}`;
+const service = () => `${domain()}/${LABEL}`;
+
+function fail(message) {
+  console.error(message);
+  process.exit(1);
+}
 
 async function waitForServer(ms = 15000) {
-  for (const end = Date.now() + ms; Date.now() < end; await new Promise((r) => setTimeout(r, 500))) {
+  for (const end = Date.now() + ms; Date.now() < end; await delay(500)) {
     try { if ((await fetch(`${URL_}/api/settings`)).ok) return true; } catch { /* not up yet */ }
   }
   return false;
 }
 
-async function install() {
-  if (process.platform !== 'darwin') { console.error('install-app is for macOS. On other systems, run npm start.'); process.exit(1); }
-  const log = path.join(ROOT, 'data', 'logs', 'server.log');
-  mkdirSync(path.dirname(log), { recursive: true });
-  mkdirSync(path.dirname(plistPath()), { recursive: true });
-  writeFileSync(plistPath(), launchAgentPlist({ node: process.execPath, server: path.join(ROOT, 'server.js'), cwd: ROOT, envPath: jobPath(process.env.PATH), log }));
-  await run('launchctl', ['bootout', `${domain()}/${LABEL}`]); // replace an older copy; fine if there's none
-  // A copy started with npm start still holds the port: the login copy would see it, exit, and not come back.
-  await new Promise((r) => setTimeout(r, 600)); // let a just-stopped login copy release the port
-  if (await waitForServer(800)) {
-    console.error(`Another copy is already running at ${URL_}. Stop it first (press Ctrl+C in the Terminal where you ran npm start), then run npm run install-app again.`);
-    process.exit(1);
-  }
-  const boot = await run('launchctl', ['bootstrap', domain(), plistPath()]);
-  if (!boot.ok) { console.error(`Couldn't start it: ${boot.stderr.trim()}`); process.exit(1); }
-  if (!(await waitForServer())) {
-    console.error(`It didn't come up. See ${log}`);
-    process.exit(1);
-  }
-  console.log(`Mobile Clock is running at ${URL_} and starts every time you log in.
+const INSTALLED_MESSAGE = (log) => `Mobile Clock is running at ${URL_} and starts every time you log in.
 
 Install it as an app (one time):
   Chrome:  ⋮ menu → Cast, save, and share → Install page as app…  (or the install icon in the address bar)
@@ -84,26 +75,54 @@ Install it as an app (one time):
   Safari:  File → Add to Dock
 
 Logs: ${log}
-To remove: npm run uninstall-app`);
+To remove: npm run uninstall-app`;
+
+function writePlist(log) {
+  mkdirSync(path.dirname(log), { recursive: true });
+  mkdirSync(path.dirname(plistPath()), { recursive: true });
+  const plist = launchAgentPlist({
+    node: process.execPath, server: path.join(ROOT, 'server.js'), cwd: ROOT, envPath: jobPath(process.env.PATH), log,
+  });
+  writeFileSync(plistPath(), plist);
+}
+
+async function install() {
+  if (process.platform !== 'darwin') fail('install-app is for macOS. On other systems, run npm start.');
+  const log = path.join(ROOT, 'data', 'logs', 'server.log');
+  writePlist(log);
+  await run('launchctl', ['bootout', service()]); // replace an older copy; fine if there's none
+  // A copy started with npm start still holds the port: the login copy would see it, exit, and not come back.
+  await delay(600); // let a just-stopped login copy release the port
+  if (await waitForServer(800)) {
+    fail(`Another copy is already running at ${URL_}. Stop it first (press Ctrl+C in the Terminal where you ran `
+      + 'npm start), then run npm run install-app again.');
+  }
+  const boot = await run('launchctl', ['bootstrap', domain(), plistPath()]);
+  if (!boot.ok) fail(`Couldn't start it: ${boot.stderr.trim()}`);
+  if (!(await waitForServer())) fail(`It didn't come up. See ${log}`);
+  console.log(INSTALLED_MESSAGE(log));
   await run('open', [URL_]);
 }
 
 async function uninstall() {
-  await run('launchctl', ['bootout', `${domain()}/${LABEL}`]);
+  await run('launchctl', ['bootout', service()]);
   if (existsSync(plistPath())) unlinkSync(plistPath());
   console.log('Removed. The dashboard no longer starts at login. You can still run npm start.');
-  console.log('To remove the app window too, open it and use its menu to uninstall, or drag it from Applications (Chrome Apps) to the Trash.');
+  console.log('To remove the app window too, open it and use its menu to uninstall, '
+    + 'or drag it from Applications (Chrome Apps) to the Trash.');
 }
 
 async function status() {
-  const r = await run('launchctl', ['print', `${domain()}/${LABEL}`]);
-  if (!r.ok) { console.log('Not installed. Run npm run install-app.'); return; }
-  const pid = r.stdout.match(/\bpid = (\d+)/)?.[1];
-  console.log(pid ? `Running (pid ${pid}) at ${URL_}` : 'Installed, but not running right now. It restarts within a few seconds if it stopped.');
+  const printed = await run('launchctl', ['print', service()]);
+  if (!printed.ok) { console.log('Not installed. Run npm run install-app.'); return; }
+  const pid = printed.stdout.match(/\bpid = (\d+)/)?.[1];
+  console.log(pid
+    ? `Running (pid ${pid}) at ${URL_}`
+    : 'Installed, but not running right now. It restarts within a few seconds if it stopped.');
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const cmd = { install, uninstall, status }[process.argv[2]];
-  if (!cmd) { console.error('Usage: node scripts/app.js install | uninstall | status'); process.exit(1); }
+  if (!cmd) fail('Usage: node scripts/app.js install | uninstall | status');
   cmd();
 }

@@ -4,7 +4,16 @@ import { createServer } from '../server.js';
 import { createTeams } from '../lib/teams.js';
 import { request } from './helpers.js';
 
-const pr = { number: 1085, title: 'TCPMOB-1735-Subsearch-Consume', url: 'https://github.com/tcp-software/mobile-clock/pull/1085', author: { login: 'me' }, headRefName: 'TCPMOB-1735-consume', isDraft: false, state: 'OPEN', reviewRequests: [{ login: 'mittal-shah' }, { name: 'mobile-team' }] };
+const pr = {
+  number: 1085,
+  title: 'TCPMOB-1735-Subsearch-Consume',
+  url: 'https://github.com/tcp-software/mobile-clock/pull/1085',
+  author: { login: 'me' },
+  headRefName: 'TCPMOB-1735-consume',
+  isDraft: false,
+  state: 'OPEN',
+  reviewRequests: [{ login: 'mittal-shah' }, { name: 'mobile-team' }],
+};
 const gh = {
   pr: { ...pr },
   async json(args) {
@@ -21,18 +30,33 @@ const gh = {
 const jira = {
   configured: true,
   async myself() { return { accountId: 'me-acc', displayName: 'Foad Ahmed', emailAddress: 'fahmed@tcpsoftware.com' }; },
-  async getIssue(key) { return { key, fields: { summary: 'SubSearch | Testing — Consume V7-31623 fix', status: { name: 'Dev Review' } } }; },
-  async userSearch(q) { return q === 'Hamza Ashfaq' ? [{ displayName: 'Hamza Ashfaq', emailAddress: 'hashfaq@tcpsoftware.com' }, { displayName: 'Hamza Ashfaq Jr', emailAddress: 'x@y' }] : []; },
+  async getIssue(key) {
+    return { key, fields: { summary: 'SubSearch | Testing — Consume V7-31623 fix', status: { name: 'Dev Review' } } };
+  },
+  async userSearch(query) {
+    if (query !== 'Hamza Ashfaq') return [];
+    return [
+      { displayName: 'Hamza Ashfaq', emailAddress: 'hashfaq@tcpsoftware.com' },
+      { displayName: 'Hamza Ashfaq Jr', emailAddress: 'x@y' },
+    ];
+  },
 };
+
+// A Teams client whose webhook records each posted card into `into`.
+const recordingTeams = (webhookUrl, into) => createTeams({
+  webhookUrl,
+  fetch: async (url, options) => { into.push(JSON.parse(options.body)); return new Response('', { status: 202 }); },
+});
 const sent = [];
 const testSent = [];
-const teams = createTeams({ webhookUrl: 'https://prod.westus.logic.azure.com/workflows/x', fetch: async (url, opt) => { sent.push(JSON.parse(opt.body)); return new Response('', { status: 202 }); } });
-const teamsTest = createTeams({ webhookUrl: 'https://prod.westus.logic.azure.com/workflows/test', fetch: async (url, opt) => { testSent.push(JSON.parse(opt.body)); return new Response('', { status: 202 }); } });
+const teams = recordingTeams('https://prod.westus.logic.azure.com/workflows/x', sent);
+const teamsTest = recordingTeams('https://prod.westus.logic.azure.com/workflows/test', testSent);
 
 let server, port;
 before(async () => {
-  server = createServer({ gh, tracker: { list: () => [] }, behind: {}, jira, teams, teamsTest, teamsPrefs: { always: ['hashfaqtcp'], never: ['mittal-shah'] } });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const teamsPrefs = { always: ['hashfaqtcp'], never: ['mittal-shah'] };
+  server = createServer({ gh, tracker: { list: () => [] }, behind: {}, jira, teams, teamsTest, teamsPrefs });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   port = server.address().port;
 });
 after(() => server.close());
@@ -41,9 +65,9 @@ beforeEach(() => { gh.pr = { ...pr }; });
 const req = (...a) => request(port)(...a);
 
 test('TEAMS_NEVER drops requested reviewers and TEAMS_ALWAYS adds people', async () => {
-  const p = (await req('GET', '/api/prs/1085/review-request')).json();
-  assert.deepEqual(p.people.map((x) => x.login), ['me', 'hashfaqtcp']);
-  assert.equal(p.testConfigured, true);
+  const preview = (await req('GET', '/api/prs/1085/review-request')).json();
+  assert.deepEqual(preview.people.map((person) => person.login), ['me', 'hashfaqtcp']);
+  assert.equal(preview.testConfigured, true);
 });
 
 test('test sends go to the test webhook and do not start the cooldown', async () => {
@@ -58,11 +82,11 @@ test('test sends go to the test webhook and do not start the cooldown', async ()
 });
 
 test('preview shows title from the Jira summary and me + requested reviewers with emails', async () => {
-  const p = (await req('GET', '/api/prs/1085/review-request')).json();
-  assert.equal(p.configured, true);
-  assert.equal(p.title, 'TCPMOB-1735 SubSearch | Testing — Consume V7-31623 fix');
-  assert.equal(p.ticketUrl, 'https://timeclockplus.atlassian.net/browse/TCPMOB-1735');
-  assert.deepEqual(p.people.map((x) => [x.login, x.name, x.email, x.selected]), [
+  const preview = (await req('GET', '/api/prs/1085/review-request')).json();
+  assert.equal(preview.configured, true);
+  assert.equal(preview.title, 'TCPMOB-1735 SubSearch | Testing — Consume V7-31623 fix');
+  assert.equal(preview.ticketUrl, 'https://timeclockplus.atlassian.net/browse/TCPMOB-1735');
+  assert.deepEqual(preview.people.map((person) => [person.login, person.name, person.email, person.selected]), [
     ['me', 'Foad Ahmed', 'fahmed@tcpsoftware.com', true],
     ['hashfaqtcp', 'Hamza Ashfaq', 'hashfaq@tcpsoftware.com', true],
   ]);

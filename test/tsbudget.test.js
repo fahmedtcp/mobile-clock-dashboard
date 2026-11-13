@@ -95,7 +95,9 @@ test('never runs git checkout/reset in repoPath itself', async () => {
 
 test('a failed git step records the error and clears running', async () => {
   const { ts, repoPath, dir } = setup();
-  const bad = createTsBudget({ repoPath, cacheDir: path.join(dir, 'c2'), historyFile: path.join(dir, 'c2', 'h.json'), exec: async () => ({ stdout: '', stderr: 'fatal: not a git repository', code: 128 }), now: () => 0 });
+  const gitFails = async () => ({ stdout: '', stderr: 'fatal: not a git repository', code: 128 });
+  const cacheDir = path.join(dir, 'c2');
+  const bad = createTsBudget({ repoPath, cacheDir, historyFile: path.join(cacheDir, 'h.json'), exec: gitFails, now: () => 0 });
   bad.runDevelop(); await bad.whenIdle();
   assert.match(bad.status().error, /not a git repository/);
   assert.equal(bad.status().running, null);
@@ -103,7 +105,10 @@ test('a failed git step records the error and clears running', async () => {
 });
 
 test('missing local checkout is reported clearly', async () => {
-  const ts = createTsBudget({ repoPath: '/definitely/missing', cacheDir: '/tmp/x', historyFile: '/tmp/x/h.json', exec: async () => ({ stdout: '', stderr: '', code: 0 }), now: () => 0 });
+  const exec = async () => ({ stdout: '', stderr: '', code: 0 });
+  const ts = createTsBudget({
+    repoPath: '/definitely/missing', cacheDir: '/tmp/x', historyFile: '/tmp/x/h.json', exec, now: () => 0,
+  });
   ts.runDevelop(); await ts.whenIdle();
   assert.match(ts.status().error, /mobile-clock folder in Settings/);
 });

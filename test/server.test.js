@@ -9,7 +9,7 @@ const fakeTracker = {
   triggerCalls: [],
   nextError: null,
   async trigger(n, keys) {
-    if (this.nextError) { const e = this.nextError; this.nextError = null; throw e; }
+    if (this.nextError) { const err = this.nextError; this.nextError = null; throw err; }
     this.triggerCalls.push([n, keys]);
     return [{ id: 'x', prNumber: n, key: keys[0] }];
   },
@@ -19,8 +19,10 @@ const fakeTracker = {
 const fakeGh = {
   nextError: null,
   async json(args) {
-    if (this.nextError) { const e = this.nextError; this.nextError = null; throw e; }
-    if (args[0] === 'pr' && args[1] === 'view') return { number: 1, state: 'OPEN', headRefName: 'h/x', baseRefName: 'develop', reviewDecision: 'APPROVED' };
+    if (this.nextError) { const err = this.nextError; this.nextError = null; throw err; }
+    if (args[0] === 'pr' && args[1] === 'view') {
+      return { number: 1, state: 'OPEN', headRefName: 'h/x', baseRefName: 'develop', reviewDecision: 'APPROVED' };
+    }
     return [];
   },
   async run() { return '0\n'; },
@@ -39,14 +41,15 @@ after(() => server.close());
 // fetch() forbids overriding Host, so use http.request directly.
 function req(method, path, { headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host: '127.0.0.1', port, method, path, headers: { Host: `127.0.0.1:${port}`, ...headers } }, (res) => {
-      let data = '';
-      res.on('data', (c) => { data += c; });
-      res.on('end', () => resolve({ status: res.statusCode, body: data, json: () => JSON.parse(data) }));
+    const options = { host: '127.0.0.1', port, method, path, headers: { Host: `127.0.0.1:${port}`, ...headers } };
+    const outgoing = http.request(options, (res) => {
+      let text = '';
+      res.on('data', (chunk) => { text += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode, body: text, json: () => JSON.parse(text) }));
     });
-    r.on('error', reject);
-    if (body !== undefined) r.write(typeof body === 'string' ? body : JSON.stringify(body));
-    r.end();
+    outgoing.on('error', reject);
+    if (body !== undefined) outgoing.write(typeof body === 'string' ? body : JSON.stringify(body));
+    outgoing.end();
   });
 }
 const api = { 'X-Dashboard': '1', 'Content-Type': 'application/json' };
@@ -117,7 +120,8 @@ test('static path traversal is 404', async () => {
 
 test('builds-config lists the 4 release dev builds checked plus the simulator build unchecked', async () => {
   const res = await req('GET', '/api/builds-config', { headers: api });
-  assert.deepEqual(res.json().map((b) => [b.key, b.defaultChecked]), [['mcAndroid', true], ['mkAndroid', true], ['mcIos', true], ['mkIos', true], ['mcIosSim', false]]);
+  const expected = [['mcAndroid', true], ['mkAndroid', true], ['mcIos', true], ['mkIos', true], ['mcIosSim', false]];
+  assert.deepEqual(res.json().map((b) => [b.key, b.defaultChecked]), expected);
 });
 
 test('partial build failure returns status and started keys', async () => {
@@ -131,14 +135,17 @@ test('GitHub routes work with Jira unconfigured; /api/jira/status says so', asyn
   const prs = await req('GET', '/api/prs', { headers: api });
   assert.equal(prs.status, 200);
   assert.ok(Array.isArray(prs.json().prs));
-  const st = await req('GET', '/api/jira/status', { headers: api });
-  assert.deepEqual(st.json(), { configured: false, ok: false, error: "Jira isn't connected. Add your Jira URL, email, and token in Settings." });
+  const jiraStatus = await req('GET', '/api/jira/status', { headers: api });
+  const error = "Jira isn't connected. Add your Jira URL, email, and token in Settings.";
+  assert.deepEqual(jiraStatus.json(), { configured: false, ok: false, error });
 });
 
 test('static files are always revalidated so a browser never mixes old and new modules', async () => {
   const res = await new Promise((resolve, reject) => {
-    const r = http.request({ host: '127.0.0.1', port, method: 'GET', path: '/app.js', headers: { Host: `127.0.0.1:${port}` } }, (res) => { res.resume(); res.on('end', () => resolve(res)); });
-    r.on('error', reject); r.end();
+    const options = { host: '127.0.0.1', port, method: 'GET', path: '/app.js', headers: { Host: `127.0.0.1:${port}` } };
+    const outgoing = http.request(options, (res) => { res.resume(); res.on('end', () => resolve(res)); });
+    outgoing.on('error', reject);
+    outgoing.end();
   });
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers['cache-control'], 'no-cache');

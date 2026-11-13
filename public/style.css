@@ -901,3 +901,27 @@ dialog.palette::backdrop { background: rgb(0 0 0 / .18); }
 .maybe .group { background: transparent; box-shadow: inset 0 0 0 1px var(--separator); }
 .maybe .row-title { color: var(--label-2); }
 .day-refresh { margin-left: 2px; }
+
+/* ---------- pull to refresh ---------- */
+
+html { overscroll-behavior-y: contain; } /* our own pull, not the browser's bounce */
+main { position: relative; }
+.pull-indicator {
+  position: absolute; top: 14px; left: 50%; width: 28px; height: 28px; margin-left: -14px;
+  opacity: 0; pointer-events: none;
+}
+.pull-ring { width: 100%; height: 100%; transform: rotate(-90deg); }
+.pull-ring circle {
+  fill: none; stroke: var(--label-3); stroke-width: 2.5; stroke-linecap: round;
+  stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke 150ms ease-out;
+}
+.pull-indicator.armed .pull-ring circle { stroke: var(--blue); }
+.pull-indicator.spinning { opacity: 1 !important; }
+.pull-indicator.spinning .pull-ring { animation: pull-spin 800ms linear infinite; }
+.pull-indicator.spinning .pull-ring circle { stroke: var(--blue); stroke-dashoffset: 30 !important; }
+@keyframes pull-spin { from { transform: rotate(-90deg); } to { transform: rotate(270deg); } }
+.pull-settling { transition: transform 420ms var(--spring); }
+@media (prefers-reduced-motion: reduce) {
+  .pull-settling { transition: none; }
+  .pull-indicator.spinning .pull-ring { animation: none; }
+}

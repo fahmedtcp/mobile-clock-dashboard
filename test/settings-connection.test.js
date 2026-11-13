@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from '../server.js';
 import { createSettings } from '../lib/settings.js';
+import { request } from './helpers.js';
 
 async function boot(opts = {}) {
   const settings = createSettings({ file: null, env: {} });
@@ -17,14 +17,7 @@ async function boot(opts = {}) {
   Object.assign(server.ctx, opts.ctx ?? {});
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const port = server.address().port;
-  const post = (service, body = {}) => new Promise((resolve, reject) => {
-    const r = http.request({ host: '127.0.0.1', port, method: 'POST', path: `/api/settings/test/${service}`, headers: { Host: `127.0.0.1:${port}`, 'X-Dashboard': '1', 'Content-Type': 'application/json' } }, (rs) => {
-      let d = ''; rs.on('data', (c) => { d += c; }); rs.on('end', () => resolve({ status: rs.statusCode, body: d, json: () => JSON.parse(d) }));
-    });
-    r.on('error', reject);
-    r.write(JSON.stringify(body));
-    r.end();
-  });
+  const post = (service, body = {}) => request(port)('POST', `/api/settings/test/${service}`, body);
   return { server, post };
 }
 const SAVED_JIRA = { jira: { baseUrl: 'https://tcp.atlassian.net', email: 'me@tcpsoftware.com', token: 'savedtoken0000' } };

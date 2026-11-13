@@ -1,9 +1,8 @@
-import { api, post, el, ext, sep, glyph, icon, skeleton, empty, toast, showError, confirmSheet } from '../ui.js';
+import { api, post, el, ext, sep, glyph, icon, skeleton, empty, toast, confirmSheet } from '../ui.js';
 import { rebalance, TICKET_KEY } from '../shared.js';
 
-// Each day carries its own workday length (saved days keep theirs when the setting changes).
-const hoursOf = (date) => serverDay(date)?.dayHours ?? local.month?.dayHours ?? 7;
 const STEP = 0.5;
+const AUTOSAVE_MS = 600;
 let ctx;
 let root;
 const local = {
@@ -13,20 +12,32 @@ const local = {
   error: null,
   selected: null,    // 'YYYY-MM-DD'
   edits: new Map(),  // date -> { leaveHours, entries } not yet confirmed (drafts autosave)
-  saveTimers: new Map(), // date -> pending autosave timer (one per day, so editing another day never cancels it)
+  // date -> pending autosave timer (one per day, so editing another day never cancels it)
+  saveTimers: new Map(),
   busy: false,
+  refreshing: null,  // date being refreshed
+  settingsVersion: 0,
 };
 
-const fmt = (h) => String(Math.round(h * 100) / 100); // Tempo hours can be 3.13; ours are 0.5h steps
-const total = (entries) => entries.reduce((a, e) => a + e.hours, 0);
-const parse = (day) => { const [y, m, d] = day.split('-').map(Number); return new Date(y, m - 1, d); };
-const longDate = (day) => parse(day).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-const shortDate = (day) => parse(day).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+const formatHours = (h) => String(Math.round(h * 100) / 100); // Tempo hours can be 3.13; ours are 0.5h steps
+const sumHours = (entries) => entries.reduce((sum, e) => sum + e.hours, 0);
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+const toDate = (day) => { const [y, m, d] = day.split('-').map(Number); return new Date(y, m - 1, d); };
+const toYm = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+const longDate = (day) => toDate(day).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+const shortDate = (day) =>
+  toDate(day).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 // Step to the next 0.5h mark, so Tempo hours like 3.13 land on 3.5 or 3.
 const stepUp = (h) => Math.floor(h * 2 + 1e-9) / 2 + STEP;
 const stepDown = (h) => Math.ceil(h * 2 - 1e-9) / 2 - STEP;
-const monthName = (ym) => parse(`${ym}-01`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
-const shiftYm = (ym, n) => { const d = parse(`${ym}-01`); d.setMonth(d.getMonth() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; };
+const monthName = (ym) => toDate(`${ym}-01`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+function shiftYm(ym, months) {
+  const date = toDate(`${ym}-01`);
+  date.setMonth(date.getMonth() + months);
+  return toYm(date);
+}
+
 const STATE = {
   confirmed: ['Confirmed', 'green'],
   review: ['Review', 'orange'],
@@ -41,9 +52,9 @@ const STATE = {
 // Save every pending draft now (before reloading, switching months, or leaving the page).
 function flushDrafts() {
   const dates = [...local.saveTimers.keys()];
-  for (const t of local.saveTimers.values()) clearTimeout(t);
+  for (const timer of local.saveTimers.values()) clearTimeout(timer);
   local.saveTimers.clear();
-  return Promise.all(dates.map((d) => saveDraft(d)));
+  return Promise.all(dates.map((date) => saveDraft(date)));
 }
 
 async function load(ym = local.ym, { fresh = false } = {}) {
@@ -70,56 +81,79 @@ function defaultDay() {
 }
 
 const serverDay = (date) => local.month.days.find((d) => d.date === date);
+// Each day carries its own workday length (saved days keep theirs when the setting changes).
+const hoursOf = (date) => serverDay(date)?.dayHours ?? local.month?.dayHours ?? 7;
+const isTempoDay = (date) => serverDay(date).state === 'tempo';
 
 // The working copy of a day: unsaved edits if any, else the server's version.
-function working(date) {
+function workingCopy(date) {
   if (local.edits.has(date)) return local.edits.get(date);
-  const d = serverDay(date);
-  return { leaveHours: d.leaveHours, removed: [], entries: d.entries.map((e) => ({ key: e.key, hours: e.hours, manual: e.manual })) };
+  const day = serverDay(date);
+  const entries = day.entries.map((e) => ({ key: e.key, hours: e.hours, manual: e.manual }));
+  return { leaveHours: day.leaveHours, removed: [], entries };
 }
 
-function edit(date, change) {
-  const w = structuredClone(working(date));
-  change(w);
-  if (serverDay(date).state === 'tempo') {
-    w.entries = w.entries.filter((e) => e.hours > 0);
-    local.edits.set(date, w);
-    clearTimeout(local.saveTimers.get(date));
-    local.saveTimers.set(date, setTimeout(() => { local.saveTimers.delete(date); saveDraft(date); }, 600));
-    render();
-    return;
-  }
-  // Rebalance against the day's original tickets too (minus ones the user removed), so lowering leave
-  // brings back tickets that a bigger leave squeezed out.
-  const present = new Set(w.entries.map((e) => e.key));
-  const day = serverDay(date);
-  const pool = (day.pool ?? day.entries)
-    .filter((e) => !present.has(e.key) && !w.removed.includes(e.key))
-    .map((e) => ({ key: e.key, hours: e.hours, manual: false }));
-  // A full day of leave leaves no ticket time, even for hours set by hand; lowering leave refills from the pool.
-  w.entries = w.leaveHours >= hoursOf(date) ? [] : rebalance([...w.entries, ...pool], hoursOf(date) - w.leaveHours);
-  local.edits.set(date, w);
-  clearTimeout(local.saveTimers.get(date));
-  local.saveTimers.set(date, setTimeout(() => { local.saveTimers.delete(date); saveDraft(date); }, 600));
+function editDay(date, change) {
+  const draft = structuredClone(workingCopy(date));
+  change(draft);
+  draft.entries = isTempoDay(date) ? draft.entries.filter((e) => e.hours > 0) : rebalanced(date, draft);
+  local.edits.set(date, draft);
+  scheduleSave(date);
   render();
 }
 
-const draftRequest = (date, w) => (serverDay(date).state === 'tempo'
-  ? [`/api/time/tempo/edits/${date}`, { entries: w.entries.map(({ key, hours }) => ({ key, hours })) }]
-  : [`/api/time/day/${date}`, { leaveHours: w.leaveHours, entries: w.entries, confirm: false }]);
+// Rebalance against the day's original tickets too (minus ones the user removed), so lowering leave
+// brings back tickets that a bigger leave squeezed out.
+function rebalanced(date, draft) {
+  const day = serverDay(date);
+  const present = new Set(draft.entries.map((e) => e.key));
+  const pool = (day.pool ?? day.entries)
+    .filter((e) => !present.has(e.key) && !draft.removed.includes(e.key))
+    .map((e) => ({ key: e.key, hours: e.hours, manual: false }));
+  // A full day of leave leaves no ticket time, even for hours set by hand; lowering leave refills from the pool.
+  const dayHours = hoursOf(date);
+  return draft.leaveHours >= dayHours ? [] : rebalance([...draft.entries, ...pool], dayHours - draft.leaveHours);
+}
+
+const addTicket = (date, key) => editDay(date, (draft) => {
+  draft.removed = draft.removed.filter((k) => k !== key);
+  draft.entries.push({ key, hours: STEP, manual: false });
+});
+
+const removeTicket = (date, key) => editDay(date, (draft) => {
+  draft.entries = draft.entries.filter((e) => e.key !== key);
+  draft.removed.push(key);
+});
+
+const setTicketHours = (date, key, step) => editDay(date, (draft) => {
+  const entry = draft.entries.find((e) => e.key === key);
+  entry.hours = step(entry.hours);
+  entry.manual = true;
+});
+
+const setLeaveHours = (date, hours) => editDay(date, (draft) => { draft.leaveHours = hours; });
+
+function scheduleSave(date) {
+  clearTimeout(local.saveTimers.get(date));
+  local.saveTimers.set(date, setTimeout(() => { local.saveTimers.delete(date); saveDraft(date); }, AUTOSAVE_MS));
+}
+
+function cancelSave(date) {
+  clearTimeout(local.saveTimers.get(date));
+  local.saveTimers.delete(date);
+}
+
+const draftRequest = (date, draft) => (isTempoDay(date)
+  ? [`/api/time/tempo/edits/${date}`, { entries: draft.entries.map(({ key, hours }) => ({ key, hours })) }]
+  : [`/api/time/day/${date}`, { leaveHours: draft.leaveHours, entries: draft.entries, confirm: false }]);
 
 async function saveDraft(date) {
-  const w = local.edits.get(date);
-  if (!w) return;
-  if (serverDay(date).state === 'tempo') {
-    try { await post(...draftRequest(date, w)); } catch (err) { toast(err.message, 'bad'); }
-    render();
-    return;
-  }
+  const draft = local.edits.get(date);
+  if (!draft) return;
+  const inTempo = isTempoDay(date);
   try {
-    await post(`/api/time/day/${date}`, { leaveHours: w.leaveHours, entries: w.entries, confirm: false });
-    const d = serverDay(date);
-    d.state = w.leaveHours >= hoursOf(date) ? 'leave' : 'review';
+    await post(...draftRequest(date, draft));
+    if (!inTempo) serverDay(date).state = draft.leaveHours >= hoursOf(date) ? 'leave' : 'review';
   } catch (err) {
     toast(err.message, 'bad');
   }
@@ -127,14 +161,13 @@ async function saveDraft(date) {
 }
 
 async function confirmDay(date) {
-  const w = working(date);
+  const draft = workingCopy(date);
   local.busy = true;
   render();
-  clearTimeout(local.saveTimers.get(date));
-  local.saveTimers.delete(date);
+  cancelSave(date);
   try {
-    await post(`/api/time/day/${date}`, { leaveHours: w.leaveHours, entries: w.entries, confirm: true });
-    toast(`${parse(date).toLocaleDateString(undefined, { weekday: 'long' })} confirmed`);
+    await post(`/api/time/day/${date}`, { leaveHours: draft.leaveHours, entries: draft.entries, confirm: true });
+    toast(`${toDate(date).toLocaleDateString(undefined, { weekday: 'long' })} confirmed`);
     const next = local.month.days.find((d) => d.date > date && (d.state === 'review' || d.state === 'nodata'));
     await load(local.ym);
     if (next) local.selected = next.date;
@@ -146,8 +179,10 @@ async function confirmDay(date) {
   render();
 }
 
-function info(key) {
-  return local.month.tickets.find((t) => t.key === key) ?? serverDay(local.selected)?.entries.find((e) => e.key === key) ?? { key, summary: '', url: null };
+function ticketInfo(key) {
+  return local.month.tickets.find((t) => t.key === key)
+    ?? serverDay(local.selected)?.entries.find((e) => e.key === key)
+    ?? { key, summary: '', url: null };
 }
 
 function evidenceFor(date, key) {
@@ -158,91 +193,128 @@ function evidenceFor(date, key) {
 
 // Differences between what's on screen and Tempo, for a day already in Tempo.
 function flagsFor(date) {
-  const d = serverDay(date);
-  if (d.state !== 'tempo') return [];
-  const t = new Map(d.tempoEntries.map((e) => [e.key, e.hours]));
-  const y = new Map(working(date).entries.map((e) => [e.key, e.hours]));
-  return [...new Set([...t.keys(), ...y.keys()])].sort()
-    .map((key) => ({ key, tempoHours: t.get(key) ?? 0, yourHours: y.get(key) ?? 0 }))
+  const day = serverDay(date);
+  if (day.state !== 'tempo') return [];
+  const tempo = new Map(day.tempoEntries.map((e) => [e.key, e.hours]));
+  const yours = new Map(workingCopy(date).entries.map((e) => [e.key, e.hours]));
+  return [...new Set([...tempo.keys(), ...yours.keys()])].sort()
+    .map((key) => ({ key, tempoHours: tempo.get(key) ?? 0, yourHours: yours.get(key) ?? 0 }))
     .filter((f) => Math.abs(f.tempoHours - f.yourHours) > 0.001);
 }
 
-function flagText(f) {
-  if (!f.tempoHours) return `Tempo doesn't have ${f.key}. You added ${fmt(f.yourHours)}h.`;
-  const change = f.yourHours ? `You changed it to ${fmt(f.yourHours)}h.` : 'You removed it.';
-  return `Tempo has ${f.key} ${fmt(f.tempoHours)}h. ${change} Update it in Tempo by hand.`;
+function flagText(flag) {
+  if (!flag.tempoHours) return `Tempo doesn't have ${flag.key}. You added ${formatHours(flag.yourHours)}h.`;
+  const change = flag.yourHours ? `You changed it to ${formatHours(flag.yourHours)}h.` : 'You removed it.';
+  return `Tempo has ${flag.key} ${formatHours(flag.tempoHours)}h. ${change} Update it in Tempo by hand.`;
 }
 
 const tempoReady = () => local.month?.tempo?.configured && local.month.tempo.status === 'ok';
-const sendable = (d) => d.state === 'confirmed' && d.date <= local.month.today && !local.edits.has(d.date);
+const sendable = (day) => day.state === 'confirmed' && day.date <= local.month.today && !local.edits.has(day.date);
 
 async function sendToTempo(dates) {
   await flushDrafts();
   let preview;
-  try { preview = await api(`/api/time/tempo/preview?dates=${dates.join(',')}`); } catch (err) { toast(err.message, 'bad'); return; }
+  try {
+    preview = await api(`/api/time/tempo/preview?dates=${dates.join(',')}`);
+  } catch (err) {
+    toast(err.message, 'bad');
+    return;
+  }
+  const results = await confirmSend(dates, preview);
+  if (!results) return;
+  await load(local.ym);
+  ctx.refresh();
+  const sent = results.filter((r) => r.status === 'sent');
+  if (dates.length === 1 && sent.length === 1) {
+    toast(`Sent ${plural(sent[0].sent, 'worklog')} to Tempo`);
+    return;
+  }
+  await showSendSummary(results);
+}
+
+// Shows what will be sent; resolves to the send results, or null when nothing was sent.
+async function confirmSend(dates, preview) {
   const ready = preview.days.filter((d) => d.ok);
   const skipped = preview.days.filter((d) => !d.ok);
-  const n = ready.reduce((a, d) => a + d.worklogs.length, 0);
+  const count = ready.reduce((n, d) => n + d.worklogs.length, 0);
   let results = null;
   const sent = await confirmSheet({
     title: dates.length > 1 ? 'Send Month to Tempo' : 'Send Day to Tempo',
-    body: [
-      el('p', { class: 'muted' }, 'Each day is checked against Tempo again right before sending. A day that already has Tempo hours is never sent.'),
-      n ? el('ul', { class: 'tempo-list' }, ready.flatMap((d) => d.worklogs.map((w) => el('li', {}, `${shortDate(d.date)} · ${w.key} · ${fmt(w.hours)}h · ${w.description || 'No status'}`)))) : el('p', {}, 'Nothing to send.'),
-      skipped.length && el('p', { class: 'muted' }, 'Skipped'),
-      skipped.length && el('ul', { class: 'tempo-list muted' }, skipped.map((d) => el('li', {}, `${shortDate(d.date)} · ${d.reason}`))),
-    ].filter(Boolean),
-    confirmLabel: `Send ${n} Worklog${n === 1 ? '' : 's'}`,
-    confirmDisabled: !n,
+    body: sendPreviewBody(ready, skipped, count),
+    confirmLabel: `Send ${plural(count, 'Worklog')}`,
+    confirmDisabled: !count,
     onConfirm: async () => {
       try { results = (await post('/api/time/tempo/send', { dates: ready.map((d) => d.date) })).results; }
       finally { load(local.ym); } // some days may have gone in even when the request failed
     },
   });
-  if (!sent || !results) return;
-  await load(local.ym);
-  ctx.refresh();
-  const fix = local.month.days.filter((d) => d.state === 'tempo' && d.flags?.length);
-  const lines = (list, text) => list.map((r) => el('li', {}, `${shortDate(r.date)} · ${text(r)}`));
-  const ok = results.filter((r) => r.status === 'sent');
-  const bad = results.filter((r) => r.status === 'failed' || r.status === 'partial');
-  const skip = results.filter((r) => r.status === 'skipped');
-  if (dates.length === 1 && ok.length === 1) { toast(`Sent ${ok[0].sent} worklog${ok[0].sent === 1 ? '' : 's'} to Tempo`); return; }
-  await confirmSheet({
+  return sent ? results : null;
+}
+
+function sendPreviewBody(ready, skipped, count) {
+  const worklogLine = (day, log) =>
+    `${shortDate(day.date)} · ${log.key} · ${formatHours(log.hours)}h · ${log.description || 'No status'}`;
+  const worklogItems = ready.flatMap((day) => day.worklogs.map((log) => el('li', {}, worklogLine(day, log))));
+  return [
+    el('p', { class: 'muted' }, 'Each day is checked against Tempo again right before sending. '
+      + 'A day that already has Tempo hours is never sent.'),
+    count ? el('ul', { class: 'tempo-list' }, worklogItems) : el('p', {}, 'Nothing to send.'),
+    skipped.length && el('p', { class: 'muted' }, 'Skipped'),
+    skipped.length && el('ul', { class: 'tempo-list muted' },
+      skipped.map((day) => el('li', {}, `${shortDate(day.date)} · ${day.reason}`))),
+  ].filter(Boolean);
+}
+
+function showSendSummary(results) {
+  const withStatus = (...statuses) => results.filter((r) => statuses.includes(r.status));
+  const dated = (text) => (r) => `${shortDate(r.date)} · ${text(r)}`;
+  const failure = (r) => (r.status === 'partial' ? `Partly sent. ${r.errors.join('; ')}` : r.errors.join('; '));
+  const toFix = local.month.days.filter((d) => d.state === 'tempo' && d.flags?.length);
+  const fixLines = (day) => flagsFor(day.date).map((f) => `${shortDate(day.date)} · ${flagText(f)}`);
+  return confirmSheet({
     title: 'Tempo Summary',
     body: [
-      ok.length && el('p', {}, el('strong', {}, 'Sent')), ok.length && el('ul', { class: 'tempo-list' }, lines(ok, (r) => `${r.sent} worklog${r.sent === 1 ? '' : 's'}`)),
-      bad.length && el('p', {}, el('strong', {}, 'Failed')), bad.length && el('ul', { class: 'tempo-list bad' }, lines(bad, (r) => (r.status === 'partial' ? `Partly sent. ${r.errors.join('; ')}` : r.errors.join('; ')))),
-      skip.length && el('p', {}, el('strong', {}, 'Skipped')), skip.length && el('ul', { class: 'tempo-list muted' }, lines(skip, (r) => r.reason)),
-      fix.length && el('p', {}, el('strong', {}, 'Fix in Tempo')), fix.length && el('ul', { class: 'tempo-list' }, fix.flatMap((d) => flagsFor(d.date).map((f) => el('li', {}, `${shortDate(d.date)} · ${flagText(f)}`)))),
-    ].filter(Boolean),
+      ...summaryGroup('Sent', 'tempo-list', withStatus('sent'), dated((r) => plural(r.sent, 'worklog'))),
+      ...summaryGroup('Failed', 'tempo-list bad', withStatus('failed', 'partial'), dated(failure)),
+      ...summaryGroup('Skipped', 'tempo-list muted', withStatus('skipped'), dated((r) => r.reason)),
+      ...summaryGroup('Fix in Tempo', 'tempo-list', toFix, fixLines),
+    ],
     confirmLabel: 'Done',
   });
 }
 
+// A bold heading and its list, or nothing when there are no items. `lines` maps an item to one or more lines.
+function summaryGroup(title, listClass, items, lines) {
+  if (!items.length) return [];
+  return [
+    el('p', {}, el('strong', {}, title)),
+    el('ul', { class: listClass }, items.flatMap(lines).map((text) => el('li', {}, text))),
+  ];
+}
+
 // ---------- refresh ----------
 
+// Whether refreshing would throw away something the user hasn't confirmed.
+function hasUnconfirmedChanges(day) {
+  const unsaved = local.edits.has(day.date);
+  if (day.state === 'tempo') return Boolean(day.flags?.length) || unsaved;
+  return day.state !== 'confirmed' && (!day.suggested || unsaved);
+}
+
 async function refreshDay(date) {
-  const d = serverDay(date);
-  const unsaved = local.edits.has(date);
-  const draft = d.state === 'tempo' ? Boolean(d.flags?.length) || unsaved : d.state !== 'confirmed' && (!d.suggested || unsaved);
-  if (draft) {
-    const ok = await confirmSheet({
-      title: 'Refresh This Day?',
-      body: [el('p', {}, `Your unconfirmed changes for ${longDate(date)} are replaced with fresh suggestions.`)],
-      confirmLabel: 'Refresh',
-    });
-    if (!ok) return;
-  }
-  clearTimeout(local.saveTimers.get(date));
-  local.saveTimers.delete(date);
+  const day = serverDay(date);
+  const discardsChanges = hasUnconfirmedChanges(day);
+  if (discardsChanges && !(await confirmRefresh(date))) return;
+  cancelSave(date);
   local.edits.delete(date);
   local.refreshing = date;
   render();
   try {
-    if (draft) await post(`/api/time/day/${date}/reset`);
+    if (discardsChanges) await post(`/api/time/day/${date}/reset`);
     await load(local.ym, { fresh: true });
-    toast(d.state === 'confirmed' ? 'Refreshed. Confirmed hours stay as they are.' : 'Refreshed with the latest activity');
+    toast(day.state === 'confirmed'
+      ? 'Refreshed. Confirmed hours stay as they are.'
+      : 'Refreshed with the latest activity');
   } catch (err) {
     toast(err.message, 'bad');
   }
@@ -250,12 +322,18 @@ async function refreshDay(date) {
   render();
 }
 
+const confirmRefresh = (date) => confirmSheet({
+  title: 'Refresh This Day?',
+  body: [el('p', {}, `Your unconfirmed changes for ${longDate(date)} are replaced with fresh suggestions.`)],
+  confirmLabel: 'Refresh',
+});
+
 // ---------- copy / export ----------
 
 function dayText(date) {
-  const w = working(date);
-  const lines = w.entries.map((e) => `${e.key}\t${fmt(e.hours)}h\t${info(e.key).summary ?? ''}`);
-  if (w.leaveHours) lines.push(`Leave\t${fmt(w.leaveHours)}h`);
+  const draft = workingCopy(date);
+  const lines = draft.entries.map((e) => `${e.key}\t${formatHours(e.hours)}h\t${ticketInfo(e.key).summary ?? ''}`);
+  if (draft.leaveHours) lines.push(`Leave\t${formatHours(draft.leaveHours)}h`);
   return lines.join('\n');
 }
 
@@ -264,71 +342,238 @@ function monthText() {
     .map((d) => `${longDate(d.date)}\n${dayText(d.date)}`).join('\n\n');
 }
 
-async function copy(text, what) {
-  try { await navigator.clipboard.writeText(text); toast(`${what} copied`); }
-  catch { toast('Copy failed. Select the text and press ⌘C.', 'bad'); }
+async function copyText(text, what) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${what} copied`);
+  } catch {
+    toast('Copy failed. Select the text and press ⌘C.', 'bad');
+  }
 }
 
 // ---------- day mode ----------
 
-function strip() {
-  return el('div', { class: 'day-strip', role: 'tablist', 'aria-label': 'Workdays' }, local.month.days.map((d) => {
-    const dt = parse(d.date);
-    const [label, color] = STATE[d.state];
-    const edited = local.edits.has(d.date);
-    return el('button', {
-      type: 'button', role: 'tab', class: `day-pill ${d.state} ${d.date === local.month.today ? 'today' : ''}`,
-      'aria-selected': String(d.date === local.selected), disabled: d.state === 'future',
-      title: `${longDate(d.date)} · ${label}`,
-      onclick: () => { local.selected = d.date; render(); },
-    },
-    el('span', { class: 'dp-wd' }, dt.toLocaleDateString(undefined, { weekday: 'short' })),
-    el('span', { class: 'dp-n' }, String(dt.getDate())),
-    el('span', { class: `dp-state ${d.state === 'tempo' && flagsFor(d.date).length ? 'orange' : color}` }, d.state === 'tempo' && flagsFor(d.date).length ? '•' : d.state === 'confirmed' || d.state === 'tempo' ? icon('check') : d.state === 'leave' ? icon('leave') : edited ? '•' : ''),
-    d.leaveHours > 0 && d.leaveHours < d.dayHours ? el('span', { class: 'dp-leave', 'aria-label': `${d.leaveHours}h leave` }) : null);
-  }));
+function dayStrip() {
+  return el('div', { class: 'day-strip', role: 'tablist', 'aria-label': 'Workdays' }, local.month.days.map(dayPill));
+}
+
+function dayPill(day) {
+  const date = toDate(day.date);
+  const [label, color] = STATE[day.state];
+  const flagged = day.state === 'tempo' && flagsFor(day.date).length > 0;
+  const partLeave = day.leaveHours > 0 && day.leaveHours < day.dayHours;
+  return el('button', {
+    type: 'button', role: 'tab', class: `day-pill ${day.state} ${day.date === local.month.today ? 'today' : ''}`,
+    'aria-selected': String(day.date === local.selected), disabled: day.state === 'future',
+    title: `${longDate(day.date)} · ${label}`,
+    onclick: () => { local.selected = day.date; render(); },
+  },
+  el('span', { class: 'dp-wd' }, date.toLocaleDateString(undefined, { weekday: 'short' })),
+  el('span', { class: 'dp-n' }, String(date.getDate())),
+  el('span', { class: `dp-state ${flagged ? 'orange' : color}` }, pillMark(day, flagged)),
+  partLeave ? el('span', { class: 'dp-leave', 'aria-label': `${day.leaveHours}h leave` }) : null);
+}
+
+// Flagged Tempo days get an orange dot, done days a check or leave icon, edited days a dot.
+function pillMark(day, flagged) {
+  if (flagged) return '•';
+  if (day.state === 'confirmed' || day.state === 'tempo') return icon('check');
+  if (day.state === 'leave') return icon('leave');
+  return local.edits.has(day.date) ? '•' : '';
 }
 
 function stepper(value, { onMinus, onPlus, label, minusDisabled = false, plusDisabled = false }) {
+  const step = (ariaLabel, disabled, onclick, text) =>
+    el('button', { type: 'button', class: 'step', 'aria-label': ariaLabel, disabled, onclick }, text);
   return el('div', { class: 'stepper', role: 'group', 'aria-label': label },
-    el('button', { type: 'button', class: 'step', 'aria-label': `Less ${label}`, disabled: minusDisabled, onclick: onMinus }, '−'),
-    el('span', { class: 'step-v' }, `${fmt(value)}h`),
-    el('button', { type: 'button', class: 'step', 'aria-label': `More ${label}`, disabled: plusDisabled, onclick: onPlus }, '+'));
+    step(`Less ${label}`, minusDisabled, onMinus, '−'),
+    el('span', { class: 'step-v' }, `${formatHours(value)}h`),
+    step(`More ${label}`, plusDisabled, onPlus, '+'));
+}
+
+function insetGroup(items) {
+  const list = el('ul', { class: 'group' }, items);
+  list.style.setProperty('--inset', '56px');
+  return list;
+}
+
+function ticketTitle(key, { url, summary }) {
+  return el('div', { class: 'row-title' },
+    url ? ext(url, key) : key,
+    summary ? el('span', { class: 'time-summary' }, ` ${summary}`) : null);
 }
 
 // Tickets with weak evidence: offered, never added on their own. Adding one works like "Add a ticket".
-function maybeList(date, d, used) {
-  const items = (d.maybe ?? []).filter((m) => !used.has(m.key));
-  if (!items.length || d.state === 'future') return null;
-  const list = el('ul', { class: 'group' }, items.map((m) => el('li', {},
-    el('div', { class: 'row' }, glyph('ticket', 'gray'),
-      el('div', { class: 'row-body' },
-        el('div', { class: 'row-title' }, m.url ? ext(m.url, m.key) : m.key, m.summary ? el('span', { class: 'time-summary' }, ` ${m.summary}`) : null),
-        el('div', { class: 'row-sub' }, m.evidence)),
-      el('div', { class: 'row-trail' },
-        el('button', { type: 'button', class: 'btn btn-small', 'aria-label': `Add ${m.key}`, onclick: () => edit(date, (x) => { x.removed = x.removed.filter((k) => k !== m.key); x.entries.push({ key: m.key, hours: STEP, manual: false }); }) }, '+ Add'))))));
-  list.style.setProperty('--inset', '56px');
+function maybeList(date, day, used) {
+  const items = (day.maybe ?? []).filter((m) => !used.has(m.key));
+  if (!items.length || day.state === 'future') return null;
+  const hint = day.state === 'tempo'
+    ? 'Not in Tempo. Add any you worked on, then add it in Tempo too.'
+    : 'Some activity, not enough to suggest. Add any you worked on.';
   return el('div', { class: 'maybe' },
-    el('div', { class: 'maybe-head' }, el('span', { class: 'maybe-title' }, 'Maybe'), el('span', { class: 'muted' }, d.state === 'tempo' ? 'Not in Tempo. Add any you worked on, then add it in Tempo too.' : 'Some activity, not enough to suggest. Add any you worked on.')),
-    list);
+    el('div', { class: 'maybe-head' },
+      el('span', { class: 'maybe-title' }, 'Maybe'),
+      el('span', { class: 'muted' }, hint)),
+    insetGroup(items.map((item) => maybeRow(date, item))));
+}
+
+function maybeRow(date, item) {
+  return el('li', {},
+    el('div', { class: 'row' }, glyph('ticket', 'gray'),
+      el('div', { class: 'row-body' }, ticketTitle(item.key, item), el('div', { class: 'row-sub' }, item.evidence)),
+      el('div', { class: 'row-trail' },
+        el('button', {
+          type: 'button', class: 'btn btn-small', 'aria-label': `Add ${item.key}`,
+          onclick: () => addTicket(date, item.key),
+        }, '+ Add'))));
 }
 
 function dayCard() {
   const date = local.selected;
-  const d = serverDay(date);
-  if (!d) return null;
-  const H = hoursOf(date);
-  const w = working(date);
-  const inTempo = d.state === 'tempo';
-  const readOnly = new Set(d.readOnlyKeys ?? []);
-  const flags = flagsFor(date);
-  const target = inTempo ? H : H - w.leaveHours;
-  const sum = total(w.entries) + (inTempo ? d.leaveHours : 0);
-  const ok = Math.abs(sum - target) < 0.001;
-  const [label, color] = STATE[local.edits.has(date) && !inTempo ? 'review' : d.state];
-  const used = new Set(w.entries.map((e) => e.key));
-  const choices = local.month.tickets.filter((t) => !used.has(t.key));
+  const day = serverDay(date);
+  if (!day) return null;
+  const draft = workingCopy(date);
+  const used = new Set(draft.entries.map((e) => e.key));
+  const totals = dayTotals(date, draft);
+  return el('section', { class: 'block' },
+    dayHeader(date, totals),
+    day.state === 'tempo' ? tempoNote(flagsFor(date)) : null,
+    ticketList(date, draft),
+    maybeList(date, day, used),
+    dayActions(date, { draft, used, ...totals }));
+}
 
+// Tempo days count Tempo's leave toward the full day; other days fill what the user's leave leaves over.
+function dayTotals(date, draft) {
+  const day = serverDay(date);
+  const inTempo = day.state === 'tempo';
+  const target = inTempo ? hoursOf(date) : hoursOf(date) - draft.leaveHours;
+  const sum = sumHours(draft.entries) + (inTempo ? day.leaveHours : 0);
+  return { target, sum, ok: Math.abs(sum - target) < 0.001 };
+}
+
+function dayHeader(date, { target, sum, ok }) {
+  const day = serverDay(date);
+  const edited = local.edits.has(date);
+  const [label, color] = STATE[edited && day.state !== 'tempo' ? 'review' : day.state];
+  const refreshing = local.refreshing === date;
+  const suggested = day.suggested && day.entries.length > 0 && !edited;
+  return el('div', { class: 'day-head' },
+    el('div', {},
+      el('h3', { class: 'day-title' }, longDate(date)),
+      el('span', { class: `chip ${color}` }, label),
+      suggested && el('span', { class: 'chip blue' }, icon('sparkle'), 'Suggested'),
+      el('button', {
+        type: 'button', class: 'btn btn-small day-refresh', disabled: refreshing,
+        title: 'Read Jira, git, GitHub, Claude, and Tempo again for this day', onclick: () => refreshDay(date),
+      }, icon('refresh'), refreshing ? 'Refreshing…' : 'Refresh')),
+    el('div', { class: 'day-total' },
+      el('span', { class: `total ${ok ? 'ok' : sum === 0 ? 'unset' : 'off'}` },
+        `${formatHours(sum)}`, el('span', { class: 'of' }, ` / ${formatHours(target)}h`)),
+      el('div', { class: 'total-bar', 'aria-hidden': 'true' },
+        el('span', { style: `width:${Math.min(100, target ? (sum / target) * 100 : 100)}%` }))));
+}
+
+function tempoNote(flags) {
+  const differs = flags.length > 0;
+  return el('div', { class: `banner ${differs ? 'info' : 'ok'} tempo-note` },
+    glyph(differs ? 'alert' : 'check', differs ? 'orange' : 'green', 'sm'),
+    differs
+      ? el('div', {}, el('strong', {}, 'Your edits differ from Tempo'),
+        el('ul', { class: 'tempo-list' }, flags.map((f) => el('li', {}, flagText(f)))))
+      : el('span', {}, 'Already in Tempo. Edits here are notes only; the dashboard never changes Tempo hours.'));
+}
+
+function ticketList(date, draft) {
+  const rows = draft.entries.map((entry) => ticketRow(date, entry));
+  const leave = leaveRow(date, draft);
+  return insetGroup(rows.length || leave
+    ? [...rows, leave]
+    : [empty('calendar', 'No activity found', 'Add the tickets you worked on, or add leave.', 'gray')]);
+}
+
+function ticketRow(date, entry) {
+  const day = serverDay(date);
+  const inTempo = day.state === 'tempo';
+  const locked = (day.readOnlyKeys ?? []).includes(entry.key);
+  const source = inTempo ? (locked ? 'In Tempo · read-only' : 'In Tempo') : evidenceFor(date, entry.key);
+  return el('li', {},
+    el('div', { class: 'row' },
+      glyph('ticket', entry.manual ? 'indigo' : 'purple'),
+      el('div', { class: 'row-body' },
+        ticketTitle(entry.key, ticketInfo(entry.key)),
+        el('div', { class: 'row-sub' },
+          el('span', {}, source),
+          entry.manual && !inTempo && [sep(), el('span', { class: 'manual-tag' }, 'set by you')])),
+      el('div', { class: 'row-trail' },
+        locked ? el('span', { class: 'step-v' }, `${formatHours(entry.hours)}h`) : ticketControls(date, entry))));
+}
+
+function ticketControls(date, entry) {
+  // Tempo hours can be off the 0.5h grid, so they snap to the next mark instead of moving by a step.
+  const inTempo = isTempoDay(date);
+  const up = inTempo ? stepUp : (h) => h + STEP;
+  const down = inTempo ? stepDown : (h) => h - STEP;
+  return [
+    stepper(entry.hours, {
+      label: `hours for ${entry.key}`,
+      minusDisabled: entry.hours <= STEP,
+      onMinus: () => setTicketHours(date, entry.key, down),
+      onPlus: () => setTicketHours(date, entry.key, up),
+    }),
+    el('button', {
+      type: 'button', class: 'icon-btn', 'aria-label': `Remove ${entry.key}`, title: 'Remove',
+      onclick: () => removeTicket(date, entry.key),
+    }, icon('x')),
+  ];
+}
+
+// Tempo days show Tempo's leave read-only; other days get a leave stepper once leave is added.
+function leaveRow(date, draft) {
+  const day = serverDay(date);
+  if (day.state === 'tempo') {
+    return day.leaveHours > 0
+      && leaveItem('Hours not logged in Tempo', el('span', { class: 'step-v' }, `${formatHours(day.leaveHours)}h`));
+  }
+  const dayHours = hoursOf(date);
+  return draft.leaveHours > 0 && leaveItem(
+    draft.leaveHours >= dayHours ? 'Full day off' : 'Ticket hours fill the rest of the day',
+    stepper(draft.leaveHours, {
+      label: 'leave hours',
+      onMinus: () => editDay(date, (next) => { next.leaveHours -= STEP; }),
+      onPlus: () => editDay(date, (next) => { next.leaveHours += STEP; }),
+      plusDisabled: draft.leaveHours >= dayHours,
+    }));
+}
+
+function leaveItem(sub, trail) {
+  return el('li', { class: 'leave-row' },
+    el('div', { class: 'row' },
+      glyph('leave', 'teal'),
+      el('div', { class: 'row-body' },
+        el('div', { class: 'row-title' }, 'Leave'),
+        el('div', { class: 'row-sub' }, sub)),
+      el('div', { class: 'row-trail' }, trail)));
+}
+
+function dayActions(date, { draft, used, target, ok }) {
+  const day = serverDay(date);
+  const inTempo = day.state === 'tempo';
+  return el('div', { class: 'day-actions' },
+    el('div', { class: 'left' },
+      addTicketSelect(date, used),
+      !inTempo && draft.leaveHours === 0 && leaveButtons(date)),
+    el('div', { class: 'right' },
+      el('button', {
+        type: 'button', class: 'btn btn-small', disabled: !draft.entries.length && !draft.leaveHours,
+        onclick: () => copyText(dayText(date), 'Day'),
+      }, icon('copy'), 'Copy Day'),
+      !inTempo && day.state === 'confirmed' && tempoReady() && sendDayButton(day),
+      !inTempo && confirmButton(day, { target, ok })));
+}
+
+function addTicketSelect(date, used) {
+  const choices = local.month.tickets.filter((t) => !used.has(t.key));
   const select = el('select', { class: 'field add-select', 'aria-label': 'Add a ticket' },
     el('option', { value: '' }, 'Add a ticket…'),
     choices.map((t) => el('option', { value: t.key }, `${t.key} ${t.summary ? `· ${t.summary.slice(0, 60)}` : ''}`)),
@@ -336,172 +581,206 @@ function dayCard() {
   select.addEventListener('change', () => {
     let key = select.value;
     if (key === '__other') key = (prompt('Ticket key, for example TCPMOB-1482') ?? '').trim().toUpperCase();
-    if (!TICKET_KEY.test(key) || used.has(key)) { select.value = ''; if (key) toast('Enter a key like TCPMOB-1482', 'bad'); return; }
-    edit(date, (x) => { x.removed = x.removed.filter((k) => k !== key); x.entries.push({ key, hours: STEP, manual: false }); });
+    if (!TICKET_KEY.test(key) || used.has(key)) {
+      select.value = '';
+      if (key) toast('Enter a key like TCPMOB-1482', 'bad');
+      return;
+    }
+    addTicket(date, key);
   });
+  return select;
+}
 
-  const rows = w.entries.map((e) => {
-    const t = info(e.key);
-    const locked = readOnly.has(e.key);
-    const up = inTempo ? stepUp : (h) => h + STEP;
-    const down = inTempo ? stepDown : (h) => h - STEP;
-    return el('li', {},
-      el('div', { class: 'row' },
-        glyph('ticket', e.manual ? 'indigo' : 'purple'),
-        el('div', { class: 'row-body' },
-          el('div', { class: 'row-title' }, t.url ? ext(t.url, e.key) : e.key, t.summary ? el('span', { class: 'time-summary' }, ` ${t.summary}`) : null),
-          el('div', { class: 'row-sub' }, el('span', {}, inTempo ? (locked ? 'In Tempo · read-only' : 'In Tempo') : evidenceFor(date, e.key)), e.manual && !inTempo && [sep(), el('span', { class: 'manual-tag' }, 'set by you')])),
-        locked ? el('div', { class: 'row-trail' }, el('span', { class: 'step-v' }, `${fmt(e.hours)}h`)) : el('div', { class: 'row-trail' },
-          stepper(e.hours, {
-            label: `hours for ${e.key}`,
-            minusDisabled: e.hours <= STEP,
-            onMinus: () => edit(date, (x) => { const it = x.entries.find((i) => i.key === e.key); it.hours = down(it.hours); it.manual = true; }),
-            onPlus: () => edit(date, (x) => { const it = x.entries.find((i) => i.key === e.key); it.hours = up(it.hours); it.manual = true; }),
-          }),
-          el('button', { type: 'button', class: 'icon-btn', 'aria-label': `Remove ${e.key}`, title: 'Remove', onclick: () => edit(date, (x) => { x.entries = x.entries.filter((i) => i.key !== e.key); x.removed.push(e.key); }) }, icon('x')))));
-  });
+function leaveButtons(date) {
+  const dayHours = hoursOf(date);
+  const button = (hours, ...label) =>
+    el('button', { type: 'button', class: 'btn btn-small', onclick: () => setLeaveHours(date, hours) }, ...label);
+  return [
+    button(STEP, icon('leave'), 'Add Leave'),
+    button(Math.round(dayHours) / 2, 'Half-Day Leave'),
+    button(dayHours, 'Full-Day Leave'),
+  ];
+}
 
-  const tempoLeaveRow = inTempo && d.leaveHours > 0 && el('li', { class: 'leave-row' },
-    el('div', { class: 'row' }, glyph('leave', 'teal'),
-      el('div', { class: 'row-body' }, el('div', { class: 'row-title' }, 'Leave'), el('div', { class: 'row-sub' }, 'Hours not logged in Tempo')),
-      el('div', { class: 'row-trail' }, el('span', { class: 'step-v' }, `${fmt(d.leaveHours)}h`))));
-  const leaveRow = inTempo ? tempoLeaveRow : w.leaveHours > 0 && el('li', { class: 'leave-row' },
-    el('div', { class: 'row' },
-      glyph('leave', 'teal'),
-      el('div', { class: 'row-body' }, el('div', { class: 'row-title' }, 'Leave'), el('div', { class: 'row-sub' }, w.leaveHours >= H ? 'Full day off' : 'Ticket hours fill the rest of the day')),
-      el('div', { class: 'row-trail' },
-        stepper(w.leaveHours, {
-          label: 'leave hours',
-          onMinus: () => edit(date, (x) => { x.leaveHours -= STEP; }),
-          onPlus: () => edit(date, (x) => { x.leaveHours += STEP; }),
-          plusDisabled: w.leaveHours >= H,
-        }))));
-
-  const list = el('ul', { class: 'group' }, rows.length || leaveRow ? [...rows, leaveRow] : [empty('calendar', 'No activity found', 'Add the tickets you worked on, or add leave.', 'gray')]);
-  list.style.setProperty('--inset', '56px');
-
-  const tempoNote = inTempo
-    ? el('div', { class: `banner ${flags.length ? 'info' : 'ok'} tempo-note` }, glyph(flags.length ? 'alert' : 'check', flags.length ? 'orange' : 'green', 'sm'),
-      flags.length
-        ? el('div', {}, el('strong', {}, 'Your edits differ from Tempo'), el('ul', { class: 'tempo-list' }, flags.map((f) => el('li', {}, flagText(f)))))
-        : el('span', {}, 'Already in Tempo. Edits here are notes only; the dashboard never changes Tempo hours.'))
-    : null;
-  const sendBtn = !inTempo && d.state === 'confirmed' && tempoReady() && el('button', {
-    type: 'button', class: 'btn btn-small', disabled: !sendable(d) || local.busy,
-    title: sendable(d) ? '' : 'Confirm your changes first',
-    onclick: () => sendToTempo([date]),
+function sendDayButton(day) {
+  return el('button', {
+    type: 'button', class: 'btn btn-small', disabled: !sendable(day) || local.busy,
+    title: sendable(day) ? '' : 'Confirm your changes first',
+    onclick: () => sendToTempo([day.date]),
   }, icon('upload'), 'Send to Tempo');
+}
 
-  return el('section', { class: 'block' },
-    el('div', { class: 'day-head' },
-      el('div', {}, el('h3', { class: 'day-title' }, longDate(date)), el('span', { class: `chip ${color}` }, label), d.suggested && d.entries.length > 0 && !local.edits.has(date) && el('span', { class: 'chip blue' }, icon('sparkle'), 'Suggested'),
-        el('button', { type: 'button', class: 'btn btn-small day-refresh', disabled: local.refreshing === date, title: 'Read Jira, git, GitHub, Claude, and Tempo again for this day', onclick: () => refreshDay(date) }, icon('refresh'), local.refreshing === date ? 'Refreshing…' : 'Refresh')),
-      el('div', { class: 'day-total' },
-        el('span', { class: `total ${ok ? 'ok' : sum === 0 ? 'unset' : 'off'}` }, `${fmt(sum)}`, el('span', { class: 'of' }, ` / ${fmt(target)}h`)),
-        el('div', { class: 'total-bar', 'aria-hidden': 'true' }, el('span', { style: `width:${Math.min(100, target ? (sum / target) * 100 : 100)}%` })))),
-    tempoNote,
-    list,
-    maybeList(date, d, used),
-    el('div', { class: 'day-actions' },
-      el('div', { class: 'left' },
-        select,
-        !inTempo && w.leaveHours === 0 && [
-          el('button', { type: 'button', class: 'btn btn-small', onclick: () => edit(date, (x) => { x.leaveHours = STEP; }) }, icon('leave'), 'Add Leave'),
-          el('button', { type: 'button', class: 'btn btn-small', onclick: () => edit(date, (x) => { x.leaveHours = Math.round(H) / 2; }) }, 'Half-Day Leave'),
-          el('button', { type: 'button', class: 'btn btn-small', onclick: () => edit(date, (x) => { x.leaveHours = H; }) }, 'Full-Day Leave')]),
-      el('div', { class: 'right' },
-        el('button', { type: 'button', class: 'btn btn-small', disabled: !w.entries.length && !w.leaveHours, onclick: () => copy(dayText(date), 'Day') }, icon('copy'), 'Copy Day'),
-        sendBtn,
-        !inTempo && el('button', { type: 'button', class: 'btn btn-filled', disabled: !ok || local.busy, title: ok ? '' : `Hours need to add up to ${fmt(target)}h`, onclick: () => confirmDay(date) },
-          icon('check'), local.busy ? 'Saving…' : d.state === 'confirmed' && !local.edits.has(date) ? 'Confirmed' : 'Confirm Day'))));
+function confirmButton(day, { target, ok }) {
+  const alreadyConfirmed = day.state === 'confirmed' && !local.edits.has(day.date);
+  return el('button', {
+    type: 'button', class: 'btn btn-filled', disabled: !ok || local.busy,
+    title: ok ? '' : `Hours need to add up to ${formatHours(target)}h`, onclick: () => confirmDay(day.date),
+  }, icon('check'), local.busy ? 'Saving…' : alreadyConfirmed ? 'Confirmed' : 'Confirm Day');
 }
 
 // ---------- month mode ----------
 
+const ticketHours = (date, key) => workingCopy(date).entries.find((e) => e.key === key)?.hours ?? 0;
+// Tempo days: leave is whatever Tempo doesn't cover. Other days: the leave the user set.
+const leaveOf = (day) => (day.state === 'tempo' ? day.leaveHours : workingCopy(day.date).leaveHours);
+const dayTotal = (day) => sumHours(workingCopy(day.date).entries) + leaveOf(day);
+const sumOver = (days, hours) => days.reduce((sum, day) => sum + hours(day), 0);
+
 function monthGrid() {
   const days = local.month.days.filter((d) => d.state !== 'future');
-  const keys = [...new Set(days.flatMap((d) => working(d.date).entries.map((e) => e.key)))];
-  const hoursOf = (date, key) => working(date).entries.find((e) => e.key === key)?.hours ?? 0;
-  // Tempo days: leave is whatever Tempo doesn't cover. Other days: the leave the user set.
-  const leaveOf = (d) => (d.state === 'tempo' ? d.leaveHours : working(d.date).leaveHours);
   const toSend = days.filter(sendable).map((d) => d.date);
   const flagged = days.filter((d) => flagsFor(d.date).length).length;
-  const table = el('table', { class: 'month-grid' },
-    el('thead', {}, el('tr', {},
-      el('th', { class: 'sticky' }, 'Ticket'),
-      days.map((d) => el('th', { class: `col ${d.state}`, title: `${longDate(d.date)} · ${STATE[d.state][0]}` },
-        el('button', { type: 'button', class: 'col-btn', onclick: () => { local.mode = 'day'; local.selected = d.date; render(); } },
-          el('span', { class: 'dp-wd' }, parse(d.date).toLocaleDateString(undefined, { weekday: 'narrow' })),
-          el('span', {}, String(parse(d.date).getDate())),
-          el('span', { class: `mini-dot ${d.state}` })))),
-      el('th', { class: 'tot' }, 'Total'))),
-    el('tbody', {},
-      keys.map((key) => el('tr', {},
-        el('th', { class: 'sticky', scope: 'row', title: info(key).summary }, key),
-        days.map((d) => {
-          const h = hoursOf(d.date, key);
-          return el('td', { class: `${d.state === 'confirmed' || d.state === 'tempo' ? 'conf' : 'sugg'} ${h ? '' : 'zero'}`, title: h ? `${key} · ${fmt(h)}h · ${d.state === 'tempo' ? 'In Tempo' : evidenceFor(d.date, key)}` : '' }, h ? fmt(h) : '');
-        }),
-        el('td', { class: 'tot' }, fmt(days.reduce((a, d) => a + hoursOf(d.date, key), 0))))),
-      el('tr', { class: 'leave-line' },
-        el('th', { class: 'sticky', scope: 'row' }, 'Leave'),
-        days.map((d) => { const l = leaveOf(d); return el('td', {}, l ? fmt(l) : ''); }),
-        el('td', { class: 'tot' }, fmt(days.reduce((a, d) => a + leaveOf(d), 0))))),
-    el('tfoot', {}, el('tr', {},
-      el('th', { class: 'sticky' }, 'Day total'),
-      days.map((d) => { const t = total(working(d.date).entries) + leaveOf(d); return el('td', { class: Math.abs(t - d.dayHours) < 0.001 ? 'ok' : 'off' }, fmt(t)); }),
-      el('td', { class: 'tot' }, fmt(days.reduce((a, d) => a + total(working(d.date).entries) + leaveOf(d), 0))))));
-
   return el('section', { class: 'block' },
     el('div', { class: 'section-head' },
       el('div', { class: 'section-title' }, glyph('calendar', 'green', 'sm'), el('h3', {}, 'Month at a Glance')),
-      el('div', { class: 'filters' },
-        tempoReady() && el('button', { type: 'button', class: 'btn btn-small btn-filled', disabled: !toSend.length, title: toSend.length ? '' : 'No confirmed days waiting for Tempo', onclick: () => sendToTempo(toSend) }, icon('upload'), toSend.length ? `Send Month (${toSend.length} day${toSend.length === 1 ? '' : 's'})` : 'Send Month'),
-        el('button', { type: 'button', class: 'btn btn-small', onclick: () => copy(monthText(), 'Confirmed month') }, icon('copy'), 'Copy Month'),
-        el('a', { class: 'btn btn-small', href: `/api/time/export?ym=${local.ym}&format=json`, download: `tempo-${local.ym}.json` }, 'Export JSON'),
-        el('a', { class: 'btn btn-small', href: `/api/time/export?ym=${local.ym}&format=csv`, download: `tempo-${local.ym}.csv` }, 'Export CSV'))),
-    el('div', { class: 'card grid-card' }, el('div', { class: 'grid-scroll' }, table),
-      flagged ? el('p', { class: 'muted' }, `${flagged} day${flagged === 1 ? '' : 's'} in Tempo ${flagged === 1 ? 'has' : 'have'} edits to make by hand. Open the day for details.`) : null,
-      el('p', { class: 'muted' }, 'Bold hours are confirmed or already in Tempo; light hours are suggestions. Exports include confirmed days only. Click a day to open it.')));
+      monthActions(toSend)),
+    el('div', { class: 'card grid-card' }, el('div', { class: 'grid-scroll' }, monthTable(days)),
+      flagged ? el('p', { class: 'muted' }, flaggedNote(flagged)) : null,
+      el('p', { class: 'muted' }, 'Bold hours are confirmed or already in Tempo; light hours are suggestions. '
+        + 'Exports include confirmed days only. Click a day to open it.')));
+}
+
+const flaggedNote = (count) =>
+  `${plural(count, 'day')} in Tempo ${count === 1 ? 'has' : 'have'} edits to make by hand. Open the day for details.`;
+
+function monthActions(toSend) {
+  const exportLink = (format, label) => el('a', {
+    class: 'btn btn-small', href: `/api/time/export?ym=${local.ym}&format=${format}`,
+    download: `tempo-${local.ym}.${format}`,
+  }, label);
+  return el('div', { class: 'filters' },
+    tempoReady() && el('button', {
+      type: 'button', class: 'btn btn-small btn-filled', disabled: !toSend.length,
+      title: toSend.length ? '' : 'No confirmed days waiting for Tempo', onclick: () => sendToTempo(toSend),
+    }, icon('upload'), toSend.length ? `Send Month (${plural(toSend.length, 'day')})` : 'Send Month'),
+    el('button', { type: 'button', class: 'btn btn-small', onclick: () => copyText(monthText(), 'Confirmed month') },
+      icon('copy'), 'Copy Month'),
+    exportLink('json', 'Export JSON'),
+    exportLink('csv', 'Export CSV'));
+}
+
+function monthTable(days) {
+  const keys = [...new Set(days.flatMap((d) => workingCopy(d.date).entries.map((e) => e.key)))];
+  return el('table', { class: 'month-grid' },
+    el('thead', {}, el('tr', {},
+      el('th', { class: 'sticky' }, 'Ticket'),
+      days.map((day) => monthColumnHead(day)),
+      el('th', { class: 'tot' }, 'Total'))),
+    el('tbody', {},
+      keys.map((key) => monthTicketRow(days, key)),
+      el('tr', { class: 'leave-line' },
+        el('th', { class: 'sticky', scope: 'row' }, 'Leave'),
+        days.map((day) => { const leave = leaveOf(day); return el('td', {}, leave ? formatHours(leave) : ''); }),
+        el('td', { class: 'tot' }, formatHours(sumOver(days, leaveOf))))),
+    el('tfoot', {}, el('tr', {},
+      el('th', { class: 'sticky' }, 'Day total'),
+      days.map((day) => {
+        const hours = dayTotal(day);
+        return el('td', { class: Math.abs(hours - day.dayHours) < 0.001 ? 'ok' : 'off' }, formatHours(hours));
+      }),
+      el('td', { class: 'tot' }, formatHours(sumOver(days, dayTotal))))));
+}
+
+function openDay(date) {
+  local.mode = 'day';
+  local.selected = date;
+  render();
+}
+
+function monthColumnHead(day) {
+  const date = toDate(day.date);
+  return el('th', { class: `col ${day.state}`, title: `${longDate(day.date)} · ${STATE[day.state][0]}` },
+    el('button', { type: 'button', class: 'col-btn', onclick: () => openDay(day.date) },
+      el('span', { class: 'dp-wd' }, date.toLocaleDateString(undefined, { weekday: 'narrow' })),
+      el('span', {}, String(date.getDate())),
+      el('span', { class: `mini-dot ${day.state}` })));
+}
+
+function monthTicketRow(days, key) {
+  return el('tr', {},
+    el('th', { class: 'sticky', scope: 'row', title: ticketInfo(key).summary }, key),
+    days.map((day) => monthCell(day, key)),
+    el('td', { class: 'tot' }, formatHours(sumOver(days, (day) => ticketHours(day.date, key)))));
+}
+
+function monthCell(day, key) {
+  const hours = ticketHours(day.date, key);
+  const done = day.state === 'confirmed' || day.state === 'tempo';
+  const source = () => (day.state === 'tempo' ? 'In Tempo' : evidenceFor(day.date, key));
+  return el('td', {
+    class: `${done ? 'conf' : 'sugg'} ${hours ? '' : 'zero'}`,
+    title: hours ? `${key} · ${formatHours(hours)}h · ${source()}` : '',
+  }, hours ? formatHours(hours) : '');
 }
 
 // ---------- page ----------
 
 function head() {
-  const m = local.month;
-  const work = m ? m.days.filter((d) => d.state !== 'future') : [];
-  const done = work.filter((d) => d.state === 'confirmed' || d.state === 'leave' || d.state === 'tempo').length;
-  const seg = el('div', { class: 'segmented', role: 'tablist', 'aria-label': 'View' }, [['day', 'Day'], ['month', 'Month']].map(([v, l]) =>
-    el('button', { type: 'button', role: 'tab', 'aria-selected': String(local.mode === v), onclick: () => { local.mode = v; render(); } }, l)));
+  const month = local.month;
   return el('div', { class: 'page-head' },
     el('div', {},
       el('div', { class: 'page-title' }, 'Time'),
-      el('div', { class: 'page-sub' }, 'Your Tempo hours, with suggestions from Jira, git, GitHub, and Claude for days not logged yet')),
-    el('div', { class: 'time-controls' },
-      el('div', { class: 'month-nav' },
-        el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Previous month', onclick: () => load(shiftYm(local.ym, -1)) }, '‹'),
-        el('span', { class: 'month-name' }, monthName(local.ym)),
-        el('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Next month', disabled: m && local.ym >= m.today.slice(0, 7), onclick: () => load(shiftYm(local.ym, 1)) }, '›')),
-      seg),
-    m && el('div', { class: 'progress-row' },
-      el('span', {}, el('strong', {}, String(done)), ` of ${work.length} workdays confirmed or in Tempo`),
-      el('div', { class: 'total-bar wide', 'aria-hidden': 'true' }, el('span', { style: `width:${work.length ? (done / work.length) * 100 : 0}%` }))),
-    m && m.tempo && !m.tempo.configured && el('p', { class: 'muted tempo-setup' }, 'Add your Tempo token in ', el('a', { href: '#settings' }, 'Settings'), ' to load and send Tempo hours.'));
+      el('div', { class: 'page-sub' },
+        'Your Tempo hours, with suggestions from Jira, git, GitHub, and Claude for days not logged yet')),
+    el('div', { class: 'time-controls' }, monthNav(), viewSwitch()),
+    month && progressRow(month),
+    month && month.tempo && !month.tempo.configured && el('p', { class: 'muted tempo-setup' },
+      'Add your Tempo token in ', el('a', { href: '#settings' }, 'Settings'), ' to load and send Tempo hours.'));
+}
+
+function monthNav() {
+  const month = local.month;
+  return el('div', { class: 'month-nav' },
+    el('button', {
+      type: 'button', class: 'icon-btn', 'aria-label': 'Previous month', onclick: () => load(shiftYm(local.ym, -1)),
+    }, '‹'),
+    el('span', { class: 'month-name' }, monthName(local.ym)),
+    el('button', {
+      type: 'button', class: 'icon-btn', 'aria-label': 'Next month',
+      disabled: month && local.ym >= month.today.slice(0, 7), onclick: () => load(shiftYm(local.ym, 1)),
+    }, '›'));
+}
+
+function viewSwitch() {
+  return el('div', { class: 'segmented', role: 'tablist', 'aria-label': 'View' },
+    [['day', 'Day'], ['month', 'Month']].map(([mode, label]) => el('button', {
+      type: 'button', role: 'tab', 'aria-selected': String(local.mode === mode),
+      onclick: () => { local.mode = mode; render(); },
+    }, label)));
+}
+
+function progressRow(month) {
+  const workdays = month.days.filter((d) => d.state !== 'future');
+  const done = workdays.filter((d) => d.state === 'confirmed' || d.state === 'leave' || d.state === 'tempo').length;
+  return el('div', { class: 'progress-row' },
+    el('span', {}, el('strong', {}, String(done)), ` of ${workdays.length} workdays confirmed or in Tempo`),
+    el('div', { class: 'total-bar wide', 'aria-hidden': 'true' },
+      el('span', { style: `width:${workdays.length ? (done / workdays.length) * 100 : 0}%` })));
 }
 
 function tempoBanner() {
-  const t = local.month.tempo;
-  if (!t || t.status === 'ok') return null;
-  if (!t.configured) return null; // shown as a quiet line in the header instead
-  return el('div', { class: 'banner error' }, glyph('alert', 'red', 'sm'), el('span', {}, `Tempo unavailable: ${t.status} Showing suggestions only, and sending is off.`));
+  const tempo = local.month.tempo;
+  if (!tempo || tempo.status === 'ok') return null;
+  if (!tempo.configured) return null; // shown as a quiet line in the header instead
+  return el('div', { class: 'banner error' }, glyph('alert', 'red', 'sm'),
+    el('span', {}, `Tempo unavailable: ${tempo.status} Showing suggestions only, and sending is off.`));
 }
 
 function sourcesBanner() {
-  const bad = Object.entries(local.month.sources).filter(([, v]) => v !== 'ok');
-  if (!bad.length) return null;
+  const failing = Object.entries(local.month.sources).filter(([, status]) => status !== 'ok');
+  if (!failing.length) return null;
   const names = { claude: 'Claude sessions', git: 'Git commits', jira: 'Jira', github: 'GitHub builds and reviews' };
   return el('div', { class: 'banner info' }, glyph('alert', 'orange', 'sm'),
-    el('span', {}, bad.map(([k, v]) => `${names[k]} unavailable: ${v}`).join(' · '), '. Suggestions use the other sources.'));
+    el('span', {}, failing.map(([source, status]) => `${names[source]} unavailable: ${status}`).join(' · '),
+      '. Suggestions use the other sources.'));
+}
+
+function setupBlock() {
+  const why = 'Time suggests hours from your Jira, git, GitHub, and Claude activity '
+    + 'once it knows how long your workday is.';
+  return el('section', { class: 'block setup-block' },
+    el('ul', { class: 'group' }, empty('calendar', 'Set your workday hours to start.', why, 'green')),
+    el('a', { class: 'btn btn-filled', href: '#settings' }, icon('gear'), 'Open Settings'));
 }
 
 function render() {
@@ -515,24 +794,27 @@ function render() {
     return;
   }
   if (local.month.dayHours === null) {
-    root.replaceChildren(head(), el('section', { class: 'block setup-block' },
-      el('ul', { class: 'group' }, empty('calendar', 'Set your workday hours to start.', 'Time suggests hours from your Jira, git, GitHub, and Claude activity once it knows how long your workday is.', 'green')),
-      el('a', { class: 'btn btn-filled', href: '#settings' }, icon('gear'), 'Open Settings')));
+    root.replaceChildren(head(), setupBlock());
     return;
   }
+  const body = local.mode === 'day' ? [dayStrip(), dayCard()] : [monthGrid()];
   // replaceChildren doesn't flatten arrays or skip nulls, so build a clean list.
-  root.replaceChildren(...[head(), tempoBanner(), sourcesBanner(), ...(local.mode === 'day' ? [strip(), dayCard()] : [monthGrid()])].filter(Boolean));
+  root.replaceChildren(...[head(), tempoBanner(), sourcesBanner(), ...body].filter(Boolean));
   root.querySelector('.day-pill[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
 }
 
 // Closing the tab inside the autosave window must not drop edits: send them with keepalive.
 addEventListener('pagehide', () => {
-  for (const [date, t] of local.saveTimers) {
-    clearTimeout(t);
-    const w = local.edits.get(date);
-    if (!w) continue;
-    const [url, body] = draftRequest(date, w);
-    fetch(url, { method: 'POST', keepalive: true, headers: { 'X-Dashboard': '1', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  for (const [date, timer] of local.saveTimers) {
+    clearTimeout(timer);
+    const draft = local.edits.get(date);
+    if (!draft) continue;
+    const [url, body] = draftRequest(date, draft);
+    fetch(url, {
+      method: 'POST', keepalive: true,
+      headers: { 'X-Dashboard': '1', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
   }
   local.saveTimers.clear();
 });
@@ -545,13 +827,16 @@ export default {
     local.settingsVersion = ctx.shared.settingsVersion ?? 0;
     root = el('div', { class: 'view-inner' });
     container.append(root);
-    const now = new Date();
-    load(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`);
+    load(toYm(new Date()));
   },
   // The month reloads on navigation and after confirm; drafts autosave. If workday hours weren't set when it
   // last loaded, check again on every visit, so setting them in Settings turns Time on right away.
+  refresh: () => load(local.ym, { fresh: true }),
   update() {
     const version = ctx.shared.settingsVersion ?? 0;
-    if (local.month?.dayHours === null || local.settingsVersion !== version) { local.settingsVersion = version; load(local.ym); }
+    if (local.month?.dayHours === null || local.settingsVersion !== version) {
+      local.settingsVersion = version;
+      load(local.ym);
+    }
   },
 };

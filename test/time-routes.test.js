@@ -50,6 +50,16 @@ test('month: suggested day sums to 7 with evidence; quiet day is nodata; future 
   assert.deepEqual(m.sources, { claude: 'ok', git: 'ok', jira: 'ok', github: 'ok' });
 });
 
+test('month days keep the field order the page reads', async () => {
+  const month = (await req('GET', '/api/time/month?ym=2026-11')).json();
+  const dayFields = ['date', 'state', 'dayHours', 'target', 'leaveHours', 'entries', 'pool', 'suggested', 'maybe'];
+  assert.deepEqual(Object.keys(month), ['ym', 'today', 'dayHours', 'days', 'tickets', 'sources', 'tempo']);
+  assert.deepEqual(Object.keys(dayOf(month, '2026-11-09')), dayFields);
+  assert.deepEqual(Object.keys(dayOf(month, '2026-11-11')),
+    ['date', 'state', 'dayHours', 'target', 'leaveHours', 'entries', 'suggested']);
+  assert.deepEqual(Object.keys(dayOf(month, '2026-11-09').entries[0]), ['key', 'summary', 'url', 'hours', 'manual', 'evidence']);
+});
+
 test('malformed ym is 400', async () => {
   assert.equal((await req('GET', '/api/time/month?ym=2026-13')).status, 400);
 });

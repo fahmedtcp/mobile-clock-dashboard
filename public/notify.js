@@ -1,48 +1,51 @@
 // Pure helpers shared by the page and the Node tests: no DOM or browser APIs here.
 
-function buildNotification(b) {
-  const retries = b.retries ?? 0;
-  const retried = retries ? ` after ${retries} automatic ${retries === 1 ? 'retry' : 'retries'}` : '';
-  if (b.conclusion === 'success') {
-    return { title: `${b.label} succeeded`, body: `PR #${b.prNumber} build passed${retried}.`, url: b.url };
+const plural = (count, word, pluralWord = `${word}s`) => (count === 1 ? word : pluralWord);
+
+function buildNotification(build) {
+  const retries = build.retries ?? 0;
+  const retried = retries ? ` after ${retries} automatic ${plural(retries, 'retry', 'retries')}` : '';
+  if (build.conclusion === 'success') {
+    return { title: `${build.label} succeeded`, body: `PR #${build.prNumber} build passed${retried}.`, url: build.url };
   }
-  if (b.reason) {
-    const attempts = b.attempt ?? 1;
-    const last = b.reason.lines.at(-1);
+  if (build.reason) {
+    const attempts = build.attempt ?? 1;
+    const lastLine = build.reason.lines.at(-1);
     return {
-      title: `${b.label} failed after ${attempts} attempt${attempts === 1 ? '' : 's'}`,
-      body: [`PR #${b.prNumber} · ${b.reason.step}`, last].filter(Boolean).join('\n'),
-      url: b.url,
+      title: `${build.label} failed after ${attempts} ${plural(attempts, 'attempt')}`,
+      body: [`PR #${build.prNumber} · ${build.reason.step}`, lastLine].filter(Boolean).join('\n'),
+      url: build.url,
     };
   }
-  return { title: `${b.label} ${b.conclusion ?? 'finished'}`, body: `PR #${b.prNumber}: ${b.conclusion ?? 'finished'}${retried}.`, url: b.url };
+  const outcome = build.conclusion ?? 'finished';
+  return { title: `${build.label} ${outcome}`, body: `PR #${build.prNumber}: ${outcome}${retried}.`, url: build.url };
 }
 
 export function diffNotifications(prev, next) {
   if (!prev) return [];
-  const out = [];
+  const notifications = [];
   const prevBuilds = new Map(prev.builds.map((b) => [b.id, b]));
-  for (const b of next.builds) {
-    if (b.status !== 'completed' || prevBuilds.get(b.id)?.status === 'completed') continue;
-    out.push(buildNotification(b));
+  for (const build of next.builds) {
+    if (build.status !== 'completed' || prevBuilds.get(build.id)?.status === 'completed') continue;
+    notifications.push(buildNotification(build));
   }
-  const prevBadges = new Map(prev.badges.map((x) => [x.key, x]));
-  for (const x of next.badges) {
-    if (x.color !== 'red' || prevBadges.get(x.key)?.color === 'red') continue;
-    out.push({ title: `${x.label} is failing`, body: 'The latest run failed.', url: x.url });
+  const prevBadges = new Map(prev.badges.map((badge) => [badge.key, badge]));
+  for (const badge of next.badges) {
+    if (badge.color !== 'red' || prevBadges.get(badge.key)?.color === 'red') continue;
+    notifications.push({ title: `${badge.label} is failing`, body: 'The latest run failed.', url: badge.url });
   }
-  return out;
+  return notifications;
 }
 
 const ACTIVE = new Set(['requested', 'queued', 'in_progress', 'waiting', 'pending']);
 
 export function pollDelay(builds, runs) {
-  return [...builds, ...runs].some((r) => ACTIVE.has(r.status)) ? 15000 : 60000;
+  return [...builds, ...runs].some((item) => ACTIVE.has(item.status)) ? 15000 : 60000;
 }
 
 export function submitState(checked, inFlight) {
   if (inFlight) return { disabled: true, label: 'Triggering...' };
-  return { disabled: checked === 0, label: `Trigger ${checked} build${checked === 1 ? '' : 's'}` };
+  return { disabled: checked === 0, label: `Trigger ${checked} ${plural(checked, 'build')}` };
 }
 
 const BEHIND_TTL_MS = 300000; // matches the server cache in config.js

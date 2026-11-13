@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { computeAlerts } from '../lib/alerts.js';
 
 const T = (key, status) => ({ key, status, url: `j/${key}` });
-const pr = (number, ticketKey, extra = {}) => ({ number, ticketKey, url: `p/${number}`, author: 'me', isDraft: false, ...extra });
-const base = { openPrs: [], mergedPrs: [], tickets: new Map(), sprintTickets: [], branches: [], login: 'me', scope: 'mine' };
+const pr = (number, ticketKey, extra = {}) => (
+  { number, ticketKey, url: `p/${number}`, author: 'me', isDraft: false, ...extra });
+const base = {
+  openPrs: [], mergedPrs: [], tickets: new Map(), sprintTickets: [], branches: [], login: 'me', scope: 'mine',
+};
 
 test('finished ticket with open non-draft PR alerts; draft does not', () => {
   const tickets = new Map([['TCPMOB-1', T('TCPMOB-1', 'Release Candidate')]]);

@@ -13,7 +13,12 @@ const jira = {
   types: ['Bug', 'Story'],
   async myself() { return { accountId: 'me-acc', displayName: 'Me' }; },
   async search(jql) { this.calls.push(['search', jql]); return Object.values(this.issues); },
-  async getIssue(key) { this.calls.push(['getIssue', key]); const i = this.issues[key]; if (!i) throw Object.assign(new Error('nope'), { status: 404 }); return i; },
+  async getIssue(key) {
+    this.calls.push(['getIssue', key]);
+    const found = this.issues[key];
+    if (!found) throw Object.assign(new Error('nope'), { status: 404 });
+    return found;
+  },
   async comments(key) { return this.commentsBy[key] ?? []; },
   async transitions() { return [{ id: '181', to: { name: 'Open' } }, { id: '41', to: { name: 'QA Review' } }]; },
   async transition(key, id) { this.calls.push(['transition', key, id]); },
@@ -22,7 +27,13 @@ const jira = {
   async createIssue(fields) { this.calls.push(['createIssue', fields]); return { key: 'TCPMOB-999' }; },
   async link(type, a, b) { this.calls.push(['link', type, a, b]); },
 };
-const issue = (key, status, extra = {}) => ({ key, fields: { summary: 'Fix thing', status: { name: status }, assignee: null, fixVersions: [], issuetype: { name: 'Bug' }, ...extra } });
+const issue = (key, status, extra = {}) => ({
+  key,
+  fields: {
+    summary: 'Fix thing', status: { name: status }, assignee: null,
+    fixVersions: [], issuetype: { name: 'Bug' }, ...extra,
+  },
+});
 
 const gh = {
   calls: [],
@@ -30,7 +41,10 @@ const gh = {
   async run(args) {
     this.calls.push(args);
     if (args.join(' ').includes('git/ref/heads/develop')) return 'abc123\n';
-    if (args.includes('POST') && args.join(' ').includes('git/refs')) { if (this.refExists) throw new GhError('Reference already exists', 'Reference already exists'); return '{}'; }
+    if (args.includes('POST') && args.join(' ').includes('git/refs')) {
+      if (this.refExists) throw new GhError('Reference already exists', 'Reference already exists');
+      return '{}';
+    }
     if (args[0] === 'api' && args[1] === 'user') return 'me\n';
     return '';
   },
@@ -47,10 +61,16 @@ before(async () => {
   port = server.address().port;
 });
 after(() => server.close());
-beforeEach(() => { jira.calls = []; gh.calls = []; gh.refExists = false; jira.issues = {}; jira.commentsBy = {}; builds.length = 0; });
+beforeEach(() => {
+  jira.calls = []; gh.calls = []; gh.refExists = false; jira.issues = {}; jira.commentsBy = {}; builds.length = 0;
+});
 
 const req = (...a) => request(port)(...a);
-const buildComment = { author: 'F', created: '2026-11-06T10:00:00Z', text: 'fahmedtcp pushed build number 4521 for MobileClock IOS to testflight' };
+const buildComment = {
+  author: 'F',
+  created: '2026-11-06T10:00:00Z',
+  text: 'fahmedtcp pushed build number 4521 for MobileClock IOS to testflight',
+};
 
 // ---- Send to QA ----
 test('qa refuses when ticket is not Dev Review', async () => {
@@ -90,7 +110,10 @@ test('start creates branch from develop sha, assigns if unassigned, never transi
   assert.equal(res.status, 200);
   assert.deepEqual(res.json(), { ok: true, branch: 'TCPMOB-5-fix-thing', assigned: true });
   const post = gh.calls.find((a) => a.includes('POST'));
-  assert.deepEqual(post, ['api', '-X', 'POST', 'repos/tcp-software/mobile-clock/git/refs', '-f', 'ref=refs/heads/TCPMOB-5-fix-thing', '-f', 'sha=abc123']);
+  assert.deepEqual(post, [
+    'api', '-X', 'POST', 'repos/tcp-software/mobile-clock/git/refs',
+    '-f', 'ref=refs/heads/TCPMOB-5-fix-thing', '-f', 'sha=abc123',
+  ]);
   assert.deepEqual(jira.calls.filter((c) => c[0] === 'assign'), [['assign', 'TCPMOB-5', 'me-acc']]);
   assert.ok(!jira.calls.some((c) => c[0] === 'transition'));
 });
@@ -118,7 +141,10 @@ test('start on existing branch still assigns, so a retry after a failed assign f
 });
 
 // ---- Bug ----
-const failedBuild = { id: '1-1', prNumber: 1042, label: 'iOS MobileKiosk', branch: 'TCPMOB-5-x', status: 'completed', conclusion: 'failure', url: 'u', reason: { step: 's', lines: ['offline'] } };
+const failedBuild = {
+  id: '1-1', prNumber: 1042, label: 'iOS MobileKiosk', branch: 'TCPMOB-5-x',
+  status: 'completed', conclusion: 'failure', url: 'u', reason: { step: 's', lines: ['offline'] },
+};
 
 test('bug requires a finished failed build', async () => {
   builds.push({ ...failedBuild, status: 'in_progress', conclusion: null });
@@ -144,7 +170,8 @@ test('bug refuses when Bug type is unavailable', async () => {
 
 test('bug creates a TCPMOB Bug with ADF description and links Relates to the PR ticket', async () => {
   builds.push(failedBuild);
-  const res = await req('POST', '/api/builds/1-1/bug', { summary: ' CI build failure ', description: 'Line one\n```\noffline\n```' });
+  const description = 'Line one\n```\noffline\n```';
+  const res = await req('POST', '/api/builds/1-1/bug', { summary: ' CI build failure ', description });
   assert.equal(res.status, 200);
   assert.equal(res.json().key, 'TCPMOB-999');
   const [, fields] = jira.calls.find((c) => c[0] === 'createIssue');
@@ -188,7 +215,15 @@ test('bug: a failed link after creating the issue still returns 200 with the key
 test('alerts survive a Jira failure and still return GitHub-only alerts', async () => {
   const origSearch = jira.search;
   jira.search = async () => { throw Object.assign(new Error('Jira rejected the token'), { status: 401 }); };
-  gh.json = async (args) => { gh.calls.push(args); return args[1] === 'list' && args.includes('open') ? [{ number: 77, title: 'no key', url: 'u', author: { login: 'me' }, headRefName: 'fix', baseRefName: 'develop', isDraft: false, reviewDecision: '', statusCheckRollup: [], createdAt: '2026-11-01T00:00:00Z', reviewRequests: [], latestReviews: [] }] : []; };
+  const openPr = {
+    number: 77, title: 'no key', url: 'u', author: { login: 'me' }, headRefName: 'fix', baseRefName: 'develop',
+    isDraft: false, reviewDecision: '', statusCheckRollup: [], createdAt: '2026-11-01T00:00:00Z',
+    reviewRequests: [], latestReviews: [],
+  };
+  gh.json = async (args) => {
+    gh.calls.push(args);
+    return args[1] === 'list' && args.includes('open') ? [openPr] : [];
+  };
   gh.run = async (args) => (args[0] === 'api' && args[1] === 'user' ? 'me\n' : '');
   const res = await req('GET', '/api/alerts');
   jira.search = origSearch;

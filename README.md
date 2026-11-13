@@ -62,6 +62,8 @@ npm start   # starts the server and opens http://localhost:4317
 npm test    # runs the test suite
 ```
 
+**Pull to refresh** on any page: at the top, keep scrolling up with two fingers on the trackpad (or drag down on a phone) until the spinner turns blue, then let go. It reloads that page, skipping caches.
+
 Press **⌘K** anywhere to search: jump to a view, open a pull request, check which build has a ticket (type its key), or switch theme. Number keys 1–5 switch views, `,` opens Settings, `/` jumps to the build lookup, and `t` opens Time.
 
 Set `NO_OPEN=1` to start without opening a browser tab. Link straight to a view with `#home`, `#release`, `#quality`, or `#team`.

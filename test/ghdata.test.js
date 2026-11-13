@@ -6,7 +6,10 @@ test('listMergedPrs queries merged PRs into base since a date and flattens autho
   let args;
   const gh = { json: async (a) => { args = a; return [{ number: 1, author: { login: 'x' } }]; } };
   const prs = await listMergedPrs(gh, { sinceIso: '2026-10-23T12:00:00Z' });
-  assert.deepEqual(args.slice(0, 11), ['pr', 'list', '-R', 'tcp-software/mobile-clock', '--state', 'merged', '--base', 'develop', '--search', 'merged:>=2026-10-23', '-L']);
+  assert.deepEqual(args.slice(0, 11), [
+    'pr', 'list', '-R', 'tcp-software/mobile-clock', '--state', 'merged', '--base', 'develop',
+    '--search', 'merged:>=2026-10-23', '-L',
+  ]);
   assert.equal(prs[0].author, 'x');
 });
 

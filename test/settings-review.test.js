@@ -135,10 +135,9 @@ test('TS budget rebuilds its worktree when the clone folder changes', async () =
 });
 
 test('no server or page copy tells people to edit .env or restart', () => {
-  const files = [
-    ...['lib', 'lib/time'].flatMap((d) => readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith('.js')).map((f) => path.join(ROOT, d, f))),
-    ...['public', 'public/views'].flatMap((d) => readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith('.js')).map((f) => path.join(ROOT, d, f))),
-  ].filter((f) => !f.endsWith('settings.js') && !f.endsWith('env.js'));
+  const jsFilesIn = (dir) => readdirSync(path.join(ROOT, dir)).filter((f) => f.endsWith('.js')).map((f) => path.join(ROOT, dir, f));
+  const files = ['lib', 'lib/time', 'public', 'public/views'].flatMap(jsFilesIn)
+    .filter((f) => !f.endsWith('settings.js') && !f.endsWith('env.js'));
   const bad = files.flatMap((f) => readFileSync(f, 'utf8').split('\n').map((l, i) => [f, i + 1, l]))
     .filter(([, , l]) => /(to|in) \.env|then restart/.test(l) && !/^\s*\/\//.test(l));
   assert.deepEqual(bad.map(([f, n]) => `${path.relative(ROOT, f)}:${n}`), []);

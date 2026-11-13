@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { diffNotifications, pollDelay } from '../public/notify.js';
+import { diffNotifications, pollDelay, submitState, behindStale } from '../public/notify.js';
 
-const b = (status) => ({ id: 'b1', label: 'Android MobileClock', prNumber: 1042, status, conclusion: null, url: 'u' });
-const done = (conclusion) => ({ ...b('completed'), conclusion });
+const build = (status) => ({ id: 'b1', label: 'Android MobileClock', prNumber: 1042, status, conclusion: null, url: 'u' });
+const done = (conclusion) => ({ ...build('completed'), conclusion });
 const badge = (color) => ({ key: 'nightly', label: 'iOS MC nightly', color, url: 'r' });
 
 test('first load never notifies', () => {
@@ -11,11 +11,11 @@ test('first load never notifies', () => {
 });
 
 test('build moving to completed notifies once with conclusion', () => {
-  const n = diffNotifications({ builds: [b('in_progress')], badges: [] }, { builds: [done('failure')], badges: [] });
-  assert.equal(n.length, 1);
-  assert.match(n[0].title, /Android MobileClock/);
-  assert.match(n[0].body, /failure/);
-  assert.equal(n[0].url, 'u');
+  const notes = diffNotifications({ builds: [build('in_progress')], badges: [] }, { builds: [done('failure')], badges: [] });
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].title, /Android MobileClock/);
+  assert.match(notes[0].body, /failure/);
+  assert.equal(notes[0].url, 'u');
   assert.equal(diffNotifications({ builds: [done('failure')], badges: [] }, { builds: [done('failure')], badges: [] }).length, 0);
 });
 
@@ -29,13 +29,11 @@ test('badge turning red notifies; red staying red does not', () => {
 });
 
 test('pollDelay is 15s with active work, else 60s', () => {
-  assert.equal(pollDelay([b('requested')], []), 15000);
+  assert.equal(pollDelay([build('requested')], []), 15000);
   assert.equal(pollDelay([], [{ status: 'queued' }]), 15000);
   assert.equal(pollDelay([], [{ status: 'in_progress' }]), 15000);
   assert.equal(pollDelay([done('success')], [{ status: 'completed' }]), 60000);
 });
-
-import { submitState, behindStale } from '../public/notify.js';
 
 test('submitState stays disabled while in flight regardless of checks', () => {
   assert.deepEqual(submitState(3, true), { disabled: true, label: 'Triggering...' });
@@ -53,17 +51,17 @@ test('behindStale refetches missing, failed-old, and expired entries', () => {
 });
 
 test('final failure notification names attempts and the reason', () => {
-  const failed = { ...b('completed'), conclusion: 'failure', attempt: 3, retries: 2,
+  const failed = { ...build('completed'), conclusion: 'failure', attempt: 3, retries: 2,
     reason: { step: 'IOS MobileKiosk Build › Release iOS Mobile Kiosk App Dev', lines: ['x', 'The Internet connection appears to be offline. (-1009)'] } };
-  const [n] = diffNotifications({ builds: [b('in_progress')], badges: [] }, { builds: [failed], badges: [] });
-  assert.equal(n.title, 'Android MobileClock failed after 3 attempts');
-  assert.match(n.body, /Release iOS Mobile Kiosk App Dev/);
-  assert.match(n.body, /offline/);
+  const [note] = diffNotifications({ builds: [build('in_progress')], badges: [] }, { builds: [failed], badges: [] });
+  assert.equal(note.title, 'Android MobileClock failed after 3 attempts');
+  assert.match(note.body, /Release iOS Mobile Kiosk App Dev/);
+  assert.match(note.body, /offline/);
 });
 
 test('success after a retry says so', () => {
-  const ok = { ...b('completed'), conclusion: 'success', attempt: 2, retries: 1 };
-  const [n] = diffNotifications({ builds: [b('queued')], badges: [] }, { builds: [ok], badges: [] });
-  assert.equal(n.title, 'Android MobileClock succeeded');
-  assert.match(n.body, /after 1 automatic retry/);
+  const succeeded = { ...build('completed'), conclusion: 'success', attempt: 2, retries: 1 };
+  const [note] = diffNotifications({ builds: [build('queued')], badges: [] }, { builds: [succeeded], badges: [] });
+  assert.equal(note.title, 'Android MobileClock succeeded');
+  assert.match(note.body, /after 1 automatic retry/);
 });

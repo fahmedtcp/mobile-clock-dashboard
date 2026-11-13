@@ -124,9 +124,19 @@ test('builds survive a restart and keep retrying from where they were', async ()
   assert.equal(statSync(file).mode & 0o777, 0o600);
 
   // "npm start" again: a new tracker reads the same file, then sees the run fail on a runner problem.
-  const gh = fakeGh({ runs: [{ databaseId: 21, createdAt: '2026-11-06T12:00:04Z', status: 'completed', conclusion: 'failure', url: 'u21', attempt: 1 }] });
-  gh.json = async (args) => (args[0] === 'pr' ? {} : args[0] === 'run' && args[1] === 'view' ? { jobs: [{ databaseId: 5, name: 'build', conclusion: 'failure', steps: [] }] } : [{ databaseId: 21, createdAt: '2026-11-06T12:00:04Z', status: 'completed', conclusion: 'failure', url: 'u21', attempt: 1 }]);
-  gh.run = async (args) => { gh.runCalls.push(args); return args.includes('--log-failed') ? 'The runner has received a shutdown signal' : ''; };
+  const failedRun = {
+    databaseId: 21, createdAt: '2026-11-06T12:00:04Z', status: 'completed', conclusion: 'failure', url: 'u21', attempt: 1,
+  };
+  const failedJobs = { jobs: [{ databaseId: 5, name: 'build', conclusion: 'failure', steps: [] }] };
+  const gh = fakeGh({ runs: [failedRun] });
+  gh.json = async (args) => {
+    if (args[0] === 'pr') return {};
+    return args[0] === 'run' && args[1] === 'view' ? failedJobs : [failedRun];
+  };
+  gh.run = async (args) => {
+    gh.runCalls.push(args);
+    return args.includes('--log-failed') ? 'The runner has received a shutdown signal' : '';
+  };
   const second = createTracker(gh, () => t, { file });
   assert.equal(second.list().length, 1);
   assert.equal(second.list()[0].status, 'requested');
