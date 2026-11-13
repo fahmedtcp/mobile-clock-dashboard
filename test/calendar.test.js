@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createCalendar } from '../lib/calendar.js';
@@ -11,7 +11,8 @@ const meeting = (title, extra = {}) => ({
   title, start: '2026-11-13T14:30:00Z', end: '2026-11-13T14:45:00Z', allDay: false, canceled: false, declined: false, ...extra,
 });
 
-// Fake execFile: swiftc "compiles" by writing the binary; the helper answers with `helper()`.
+// Fake execFile: swiftc "compiles" by writing the binary; `open` runs the app and writes the helper's
+// stdout and stderr to the files it was given (open itself exits 0 unless it timed out).
 function fakeExec(helper) {
   const calls = [];
   const exec = async (file, args, opts) => {
@@ -21,7 +22,11 @@ function fakeExec(helper) {
       writeFileSync(args[args.indexOf('-o') + 1], 'bin');
       return { stdout: '', stderr: '', code: 0 };
     }
-    return helper();
+    if (file === 'codesign') return { stdout: '', stderr: '', code: 0 };
+    const result = helper();
+    writeFileSync(args[args.indexOf('--stdout') + 1], result.stdout);
+    writeFileSync(args[args.indexOf('--stderr') + 1], result.stderr);
+    return { stdout: '', stderr: '', code: result.code === 143 ? 143 : 0 };
   };
   return { exec, calls };
 }
@@ -33,7 +38,7 @@ const setup = (helper, opts = {}) => {
   const cal = createCalendar({ exec, cacheDir, now: () => t, enabled: () => opts.enabled ?? true });
   return { cal, calls, tick: (ms) => { t += ms; } };
 };
-const helperCalls = (calls) => calls.filter((c) => c.file.endsWith('calendar-helper')).length;
+const helperCalls = (calls) => calls.filter((c) => c.file === 'open').length;
 
 test('compiles once, then runs the binary and keeps timed meetings only', async () => {
   const { cal, calls } = setup(ok([
@@ -103,6 +108,22 @@ test('the first run waits up to 2 minutes (the permission prompt), later runs 15
   await cal.meetings(FROM, TO);
   tick(5 * 60000 + 1);
   await cal.meetings(FROM, TO);
-  const runs = calls.filter((c) => c.file.endsWith('calendar-helper'));
+  const runs = calls.filter((c) => c.file === 'open');
   assert.deepEqual(runs.map((c) => c.opts.timeout), [120000, 15000]);
+});
+
+test('runs as a signed app bundle through open, so macOS can ask for calendar access', async () => {
+  const { exec, calls } = fakeExec(ok([meeting('Standup')]));
+  const cacheDir = mkdtempSync(path.join(tmpdir(), 'cal-'));
+  const cal = createCalendar({ exec, cacheDir, enabled: () => true });
+  assert.equal((await cal.meetings(FROM, TO)).length, 1);
+  const app = path.join(cacheDir, 'CalendarHelper.app');
+  const plist = readFileSync(path.join(app, 'Contents', 'Info.plist'), 'utf8');
+  assert.match(plist, /<key>NSCalendarsFullAccessUsageDescription<\/key>/);
+  assert.match(plist, /<key>LSUIElement<\/key>\s*<true\/>/);
+  assert.ok(existsSync(path.join(app, 'Contents', 'MacOS', 'calendar-helper')));
+  assert.ok(calls.some((c) => c.file === 'codesign' && c.args.at(-1) === app));
+  const run = calls.find((c) => c.file === 'open');
+  assert.deepEqual(run.args.filter((a) => a.startsWith('-') && !a.startsWith('--')), ['-W', '-n', '-g']);
+  assert.deepEqual(run.args.slice(-4), [app, '--args', FROM, TO]);
 });
