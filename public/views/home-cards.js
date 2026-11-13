@@ -2,7 +2,7 @@
 // All text goes through el() → textContent, so Jira and calendar text can never become markup.
 import { el, glyph, freshness } from '../ui.js';
 import { ticketLink } from '../tickets-ui.js';
-import { shiftState } from '../shared.js';
+import { shiftState, labelRows } from '../shared.js';
 
 const STAGE_COUNT = 5;
 const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -39,6 +39,56 @@ function nextMeetingText(meetings, now) {
 // The server's clock, moved forward by the time since the response arrived.
 export const nowOf = (home) => new Date(Date.parse(home.now) + (Date.now() - (home.fetchedAt ?? Date.now())));
 
+const LABEL_TOP = 30;   // px from the rail's top to the first label row
+const LABEL_ROW = 36;   // px per extra row when labels would touch
+const minutesText = (ms) => hm(Math.max(1, Math.round(ms / 60000)));
+
+// A4: an 18px pill per meeting with a two-line label under it. Past meetings fade, the live one is green with
+// "now", the next one is bold with "in 52m". Labels that would touch drop to the next row (see layoutLabels).
+function meetingMarks(shift, meetings, now) {
+  const t = now.getTime();
+  const next = meetings.find((m) => Date.parse(m.start) > t);
+  return meetings.flatMap((m) => {
+    const start = Date.parse(m.start);
+    const end = Date.parse(m.end);
+    const state = end <= t ? 'done' : start <= t ? 'live' : m === next ? 'next' : '';
+    const from = pctOfShift(shift, m.start);
+    const width = Math.max(0.8, pctOfShift(shift, m.end) - from);
+    const center = from + width / 2;
+    const tag = state === 'live' ? el('span', { class: 'tag live' }, 'now')
+      : state === 'next' ? el('span', { class: 'tag next' }, `in ${minutesText(start - t)}`) : null;
+    return [
+      el('i', { class: `mtg ${state}`, style: `left:${from}%;width:${width}%`, title: `${m.title} · ${clock(m.start)}–${clock(m.end)}` }),
+      el('i', { class: 'stem', style: `left:${center}%` }),
+      el('span', { class: `mlbl c ${state}`, style: `left:${center}%`, 'data-from': from, 'data-to': Math.min(100, from + width) },
+        el('b', {}, m.title), tag, el('br'), el('span', { class: 't' }, `${clock(m.start)} · ${minutesText(end - start)}`)),
+    ];
+  });
+}
+
+// Once the rail has a width: put touching labels on lower rows, stretch their stems, and grow the rail to fit.
+function layoutLabels(rail) {
+  const labels = [...rail.querySelectorAll('.mlbl')];
+  const stems = [...rail.querySelectorAll('.stem')];
+  if (!labels.length) return;
+  const box = rail.getBoundingClientRect();
+  // Centered by default; a label that would spill past either end aligns to its block's edge instead.
+  for (const label of labels) {
+    label.className = label.className.replace(/\b[lrc]\b/, 'c');
+    label.style.left = `${(Number(label.dataset.from) + Number(label.dataset.to)) / 2}%`;
+    const r = label.getBoundingClientRect();
+    if (r.right > box.right) { label.className = label.className.replace(/\bc\b/, 'r'); label.style.left = `${label.dataset.to}%`; }
+    if (r.left < box.left) { label.className = label.className.replace(/\bc\b/, 'l'); label.style.left = `${label.dataset.from}%`; }
+  }
+  const origin = box.left;
+  const rows = labelRows(labels.map((l) => { const r = l.getBoundingClientRect(); return [r.left - origin, r.right - origin]; }));
+  labels.forEach((label, i) => {
+    label.style.top = `${LABEL_TOP + rows[i] * LABEL_ROW}px`;
+    stems[i].style.height = `${LABEL_TOP - 22 + rows[i] * LABEL_ROW}px`;
+  });
+  rail.style.height = `${LABEL_TOP + (Math.max(...rows) + 1) * LABEL_ROW}px`;
+}
+
 export function shiftLine(shift, meetings, now) {
   if (shift.phase === 'weekend') return null;
   const live = shiftState(now, shift);
@@ -46,19 +96,17 @@ export function shiftLine(shift, meetings, now) {
   const left = live.phase === 'before' ? `Starts in ${hm(live.startsInMinutes)}`
     : live.phase === 'after' ? 'Shift over' : `${hm(live.minutesLeft)} left`;
   const label = (hhmm) => new Date(`2000-01-01T${hhmm}:00`).toLocaleTimeString([], { hour: 'numeric' });
-  return el('div', { class: 'shiftline', role: 'img', 'aria-label': `Shift ${label(shift.start)} to ${label(shift.end)}, ${left}` },
+  const line = el('div', { class: 'shiftline', role: 'img', 'aria-label': `Shift ${label(shift.start)} to ${label(shift.end)}, ${left}` },
     el('span', {}, label(shift.start)),
     el('div', { class: 'rail', 'aria-hidden': 'true' },
       el('i', { class: 'base' }), el('i', { class: 'past', style: `width:${pct}%` }),
       el('i', { class: 'pin', style: `left:${100 - (shift.wrapMinutes / ((Date.parse(shift.shiftEnd) - Date.parse(shift.shiftStart)) / 60000)) * 100}%`, title: 'Wrap-up starts' }),
-      ...meetings.map((m) => {
-        const from = pctOfShift(shift, m.start);
-        const width = Math.max(0.8, pctOfShift(shift, m.end) - from);
-        return el('i', { class: `mtg ${from > 75 ? 'r' : ''}`, style: `left:${from}%;width:${width}%`, title: `${m.title} · ${clock(m.start)}` },
-          el('span', {}, m.title));
-      }),
+      ...meetingMarks(shift, meetings, now),
       live.phase === 'during' && el('i', { class: 'now', style: `left:${pct}%` })),
     el('span', { class: 'left-time' }, label(shift.end), ' · ', el('b', {}, left)));
+  const rail = line.querySelector('.rail');
+  new ResizeObserver(() => layoutLabels(rail)).observe(rail);
+  return line;
 }
 
 export function heroCard(home, act) {
