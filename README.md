@@ -62,6 +62,14 @@ npm start   # starts the server and opens http://localhost:4317
 npm test    # runs the test suite
 ```
 
+**Ticket panel:** click any ticket key, ticket chip, or build chip to open a side panel with the ticket's status, last build, pull requests, description, latest comments, and hours this month. Esc closes it. The ⌘K palette has **Open ticket** too.
+
+**Last build:** tickets with a "pushed build number" comment show a blue chip like "▲ Build 412 · Android MC · 2h ago" on Home and in Time.
+
+**Freshness:** each section shows when its data was last updated. It turns orange with **Refresh** when it's older than it should be, and red with **Retry** when the last update failed. The data already on screen stays.
+
+**Why these hours?** On Time, each ticket has a **Why Nh?** button. It opens that day's evidence: Jira status changes and who made them, Claude sessions (ID, times, active minutes, mentions), commits with their branch, and builds and reviews. Below it is the point math behind the hours. Claude chat text is never shown or stored.
+
 **Pull to refresh** on any page: at the top, keep scrolling up with two fingers on the trackpad (or drag down on a phone) until the spinner turns blue, then let go. It reloads that page, skipping caches.
 
 Press **⌘K** anywhere to search: jump to a view, open a pull request, check which build has a ticket (type its key), or switch theme. Number keys 1–5 switch views, `,` opens Settings, `/` jumps to the build lookup, and `t` opens Time.

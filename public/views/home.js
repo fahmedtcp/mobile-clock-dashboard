@@ -1,7 +1,8 @@
 import {
   $, api, post, el, ext, ago, duration, statusOf, statusChip, ticketChip, placeholder, sep, showError, confirmSheet,
-  toast, section, icon, glyph, avatar, skeleton, empty,
+  toast, section, icon, glyph, avatar, skeleton, empty, sectionFreshness,
 } from '../ui.js';
+import { registerTicketActions, buildChip, loadLatestBuilds, ticketLink } from '../tickets-ui.js';
 import { submitState, behindStale } from '../notify.js';
 import { branchName, TICKET_KEY } from '../shared.js';
 
@@ -11,6 +12,7 @@ const local = {
   alertScope: 'mine',
   alerts: [], alertsError: null, alertsAt: 0,
   tickets: [], ticketsError: null, ticketsAt: 0, ticketsLoaded: false,
+  loadedAt: { alerts: 0, tickets: 0 }, // when each last loaded successfully (freshness labels)
   behind: new Map(),
   ai: new Map(),        // pr number -> { loading } | { summary, inlineCount } | { error }
   ts: { prResults: {} },
@@ -19,6 +21,7 @@ const local = {
   workflows: new Set(),
 };
 const SLOW_MS = 120000; // alerts and my tickets refresh every 2 minutes
+const POLL_MS = 60000; // the shared loop's idle pace (pollDelay in notify.js)
 const FAILED_CONCLUSIONS = ['failure', 'timed_out', 'startup_failure'];
 
 const plural = (count, word) => `${word}${count === 1 ? '' : 's'}`;
@@ -31,14 +34,17 @@ const linkButton = (href, label) => ext(href, el('span', { class: 'btn btn-small
 
 function loadAlerts() {
   return api(`/api/alerts?scope=${local.alertScope}`).then(
-    (alerts) => { local.alerts = alerts; local.alertsError = null; },
+    (alerts) => { local.alerts = alerts; local.alertsError = null; local.loadedAt.alerts = Date.now(); },
     (err) => { local.alertsError = err; },
   );
 }
 
 function loadTickets() {
   return api('/api/tickets/mine').then(
-    (tickets) => { local.tickets = tickets; local.ticketsError = null; local.ticketsLoaded = true; },
+    (tickets) => {
+      Object.assign(local, { tickets, ticketsError: null, ticketsLoaded: true });
+      local.loadedAt.tickets = Date.now();
+    },
     (err) => { local.ticketsError = err; local.ticketsLoaded = true; },
   );
 }
@@ -358,7 +364,7 @@ function ticketRow(ticket) {
       el('div', { class: 'row-body' },
         el('div', { class: 'row-title' }, ext(ticket.url, ticket.summary)),
         el('div', { class: 'row-sub' },
-          el('span', { class: 'num' }, ticket.key),
+          ticketLink(ticket.key), buildChip(ticket.key),
           ticket.fixVersions.length ? [sep(), el('span', {}, ticket.fixVersions.join(', '))] : null)),
       el('div', { class: 'row-trail' },
         ticketChip(ticket),
@@ -453,7 +459,7 @@ async function sendToQa(pr) {
     confirmDisabled: !latest.size,
     onConfirm: () => post(`/api/tickets/${ticket.key}/qa`),
   });
-  if (ok) { toast(`${ticket.key} moved to QA Review`, 'ok'); ctx.refresh(); }
+  if (ok) { toast(`${ticket.key} moved to QA Review`, 'ok'); ctx?.refresh(); }
 }
 
 // ---------- Teams sheets (Request Review, Request QA Review) ----------
@@ -821,6 +827,7 @@ function prRow(pr) {
           tsNode(pr), miniBuilds(pr.number)),
         prActions(pr)),
       el('div', { class: 'row-trail' },
+        pr.ticketKey && buildChip(pr.ticketKey),
         ticketChip(pr.ticket, pr.ticketKey),
         pr.stale && el('span', { class: 'chip orange' }, 'Stale'),
         reviewStateChip(pr))),
@@ -988,6 +995,21 @@ function render() {
   renderTickets();
   renderPrs();
   renderRuns();
+  renderFreshness();
+  loadLatestBuilds([...local.tickets.map((t) => t.key), ...visiblePrs().map((pr) => pr.ticketKey)]);
+}
+
+// "Updated N min ago" per section. Jira being off is the banner's job, so it doesn't turn these red.
+function renderFreshness() {
+  const { shared } = ctx;
+  const errors = ctx.errors ?? {};
+  const jiraError = (err) => (jiraProblem(err) ? null : err);
+  const reloadSlow = () => loadSlow(true);
+  sectionFreshness('alerts', { at: local.loadedAt.alerts, intervalMs: SLOW_MS, error: jiraError(local.alertsError), onRefresh: reloadSlow });
+  sectionFreshness('tickets', { at: local.loadedAt.tickets, intervalMs: SLOW_MS, error: jiraError(local.ticketsError), onRefresh: reloadSlow });
+  sectionFreshness('builds', { at: shared.loadedAt.builds, intervalMs: POLL_MS, error: errors.prs, onRefresh: ctx.refresh });
+  sectionFreshness('prs', { at: shared.loadedAt.prs, intervalMs: POLL_MS, error: errors.prs, onRefresh: ctx.refresh });
+  sectionFreshness('runs', { at: shared.loadedAt.runs, intervalMs: POLL_MS, error: errors.runs, onRefresh: ctx.refresh });
 }
 
 function segmented(name, options, value, onChange) {
@@ -1053,6 +1075,9 @@ function homeSections() {
     section('runs', 'Actions', ['bolt', 'teal'], runFilters()),
   ];
 }
+
+// The ticket panel can open on any page, so its QA buttons are wired when this module loads, not when Home first shows.
+registerTicketActions({ requestQa: (ticket) => requestQa({ ticket }), sendToQa: (ticket) => sendToQa({ ticket }) });
 
 export default {
   id: 'home',

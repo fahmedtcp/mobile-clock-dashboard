@@ -24,6 +24,7 @@ import * as tsbudget from './lib/tsbudget.js';
 import * as simulator from './lib/simulator.js';
 import * as time from './lib/time/routes.js';
 import * as teams from './lib/teams.js';
+import * as ticketPanel from './lib/ticket-panel.js';
 import { createGh, GhError } from './lib/gh.js';
 import { getPr, createBehindCache, updateBranch } from './lib/prs.js';
 import { createTracker, BuildRequestError } from './lib/builds.js';
@@ -63,7 +64,7 @@ async function serveStatic(req, res) {
 }
 
 // Feature modules each export routes(ctx); later tasks append to this list.
-const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams];
+const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel];
 
 // No reminder until workday hours are set: there's nothing to confirm yet.
 export const reminderSetting = (time) => (time.reminderOn && time.dayHours != null ? time.reminderAt : 'off');

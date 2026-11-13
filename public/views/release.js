@@ -1,4 +1,5 @@
-import { api, el, ext, sep, ticketChip, toast, glyph, icon, avatar, skeleton, empty } from '../ui.js';
+import { api, el, ext, sep, ticketChip, toast, glyph, icon, avatar, skeleton, empty, freshness } from '../ui.js';
+import { ticketLink } from '../tickets-ui.js';
 
 const SVG = 'http://www.w3.org/2000/svg';
 
@@ -7,13 +8,14 @@ let root;
 let data = null;
 let error = null;
 let loadedAt = 0;
+let fetchedAt = 0; // last successful load, for the freshness label
 let loading = false;
 
 async function load(force = false) {
   if (loading || (!force && Date.now() - loadedAt < REFRESH_MS)) return;
   loading = true;
   render();
-  try { data = await api('/api/release'); error = null; } catch (err) { error = err; }
+  try { data = await api('/api/release'); error = null; fetchedAt = Date.now(); } catch (err) { error = err; }
   loadedAt = Date.now();
   loading = false;
   render();
@@ -75,7 +77,7 @@ function ticketRows(tickets, { mismatch = false } = {}) {
       el('div', { class: 'row-body' },
         el('div', { class: 'row-title' }, ext(ticket.url, ticket.summary)),
         el('div', { class: 'row-sub' },
-          el('span', { class: 'num' }, ticket.key), sep(), el('span', {}, ticket.issueType),
+          ticketLink(ticket.key), sep(), el('span', {}, ticket.issueType),
           ticket.assignee ? [sep(), el('span', {}, ticket.assignee.name)] : null)),
       el('div', { class: 'row-trail' },
         mismatch && ticket.mismatch && el('span', {
@@ -124,14 +126,15 @@ function pageHead() {
   return el('div', { class: 'page-head' },
     el('div', {},
       el('div', { class: 'page-title' }, 'Release'),
-      el('div', { class: 'page-sub' }, 'What\'s in the next version, and what isn\'t yet')),
+      el('div', { class: 'page-sub' }, 'What\'s in the next version, and what isn\'t yet'),
+      freshness({ at: fetchedAt, intervalMs: REFRESH_MS, error: data ? error : null, onRefresh: () => load(true) })),
     el('button', { class: 'btn btn-small', type: 'button', disabled: loading, onclick: () => load(true) },
       icon('refresh'), loading ? 'Refreshing…' : 'Refresh'));
 }
 
 function render() {
   if (!root) return;
-  if (error) {
+  if (error && !data) {
     root.replaceChildren(pageHead(), el('div', { class: 'banner error', role: 'alert' }, error.message));
     return;
   }

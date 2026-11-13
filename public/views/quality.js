@@ -1,4 +1,4 @@
-import { api, post, el, ext, sep, ago, toast, glyph, icon, skeleton, empty } from '../ui.js';
+import { api, post, el, ext, sep, ago, toast, glyph, icon, skeleton, empty, freshness } from '../ui.js';
 
 const REFRESH_MS = 120000;
 const SVG = 'http://www.w3.org/2000/svg';
@@ -8,6 +8,7 @@ let ts = null;
 let tests = null;
 let testsError = null;
 let loadedAt = 0;
+let fetchedAt = 0; // last successful load, for the freshness label
 let pollTimer;
 
 async function load(force = false) {
@@ -15,7 +16,7 @@ async function load(force = false) {
   loadedAt = Date.now();
   await Promise.all([
     api('/api/ts').then((result) => { ts = result; }, () => {}),
-    api('/api/tests').then((result) => { tests = result; testsError = null; }, (err) => { testsError = err; }),
+    api('/api/tests').then((result) => { tests = result; testsError = null; fetchedAt = Date.now(); }, (err) => { testsError = err; }),
   ]);
   render();
   if (ts?.status.running) pollTs();
@@ -119,7 +120,7 @@ function tsSummary(last, prev) {
 }
 
 function testRows() {
-  if (testsError) return [el('li', {}, el('div', { class: 'banner error' }, testsError.message))];
+  if (testsError && !tests) return [el('li', {}, el('div', { class: 'banner error' }, testsError.message))];
   if (!tests) return skeleton(4);
   return tests.suites.map(suiteRow);
 }
@@ -186,7 +187,8 @@ function render() {
   root.replaceChildren(
     el('div', { class: 'page-head' }, el('div', {},
       el('div', { class: 'page-title' }, 'Quality'),
-      el('div', { class: 'page-sub' }, 'Code health and test reliability on develop'))),
+      el('div', { class: 'page-sub' }, 'Code health and test reliability on develop'),
+      freshness({ at: fetchedAt, intervalMs: REFRESH_MS, error: tests ? testsError : null, onRefresh: () => load(true) }))),
     el('section', { class: 'block' },
       sectionHead(['chart', 'teal'], 'TypeScript Error Budget', 'Lower is better'), tsCard()),
     el('section', { class: 'block' },

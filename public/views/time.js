@@ -1,7 +1,9 @@
-import { api, post, el, ext, sep, glyph, icon, skeleton, empty, toast, confirmSheet } from '../ui.js';
+import { api, post, el, ext, sep, glyph, icon, skeleton, empty, toast, confirmSheet, freshness } from '../ui.js';
+import { ticketLink, buildChip, loadLatestBuilds } from '../tickets-ui.js';
 import { rebalance, TICKET_KEY } from '../shared.js';
 
 const STEP = 0.5;
+const MONTH_FRESH_MS = 5 * 60 * 1000; // the server rebuilds the month at most this often
 const AUTOSAVE_MS = 600;
 let ctx;
 let root;
@@ -16,6 +18,9 @@ const local = {
   saveTimers: new Map(),
   busy: false,
   refreshing: null,  // date being refreshed
+  loadError: null,   // a reload failed while the last good month stays on screen
+  evidence: new Map(),     // `${date}|${key}` -> Evidence | { loading } | { error }
+  openEvidence: new Set(), // which "Why?" timelines are expanded
   settingsVersion: 0,
 };
 
@@ -65,9 +70,11 @@ async function load(ym = local.ym, { fresh = false } = {}) {
   try {
     local.month = await api(`/api/time/month?ym=${ym}${fresh ? '&fresh=1' : ''}`);
     local.edits.clear();
+    local.evidence.clear();
+    local.loadError = null;
     if (!local.selected || !local.selected.startsWith(ym)) local.selected = defaultDay();
   } catch (err) {
-    local.error = err;
+    if (local.month?.ym === ym) local.loadError = err; else local.error = err;
   }
   render();
 }
@@ -399,7 +406,7 @@ function insetGroup(items) {
 
 function ticketTitle(key, { url, summary }) {
   return el('div', { class: 'row-title' },
-    url ? ext(url, key) : key,
+    TICKET_KEY.test(key) ? ticketLink(key) : url ? ext(url, key) : key,
     summary ? el('span', { class: 'time-summary' }, ` ${summary}`) : null);
 }
 
@@ -420,12 +427,90 @@ function maybeList(date, day, used) {
 function maybeRow(date, item) {
   return el('li', {},
     el('div', { class: 'row' }, glyph('ticket', 'gray'),
-      el('div', { class: 'row-body' }, ticketTitle(item.key, item), el('div', { class: 'row-sub' }, item.evidence)),
+      el('div', { class: 'row-body' }, ticketTitle(item.key, item),
+        el('div', { class: 'row-sub' }, item.evidence, whyButton(date, item.key, 'Why?'))),
       el('div', { class: 'row-trail' },
         el('button', {
           type: 'button', class: 'btn btn-small', 'aria-label': `Add ${item.key}`,
           onclick: () => addTicket(date, item.key),
-        }, '+ Add'))));
+        }, '+ Add'))),
+    evidenceRegion(date, item.key));
+}
+
+// ---------- evidence ("Why Nh?") ----------
+
+const evidenceId = (date, key) => `${date}|${key}`;
+
+function whyButton(date, key, label) {
+  if (!TICKET_KEY.test(key)) return null;
+  const open = local.openEvidence.has(evidenceId(date, key));
+  return el('button', {
+    type: 'button', class: 'why-pill', 'aria-expanded': String(open), onclick: () => toggleEvidence(date, key),
+  }, label, el('span', { class: 'why-chev', 'aria-hidden': 'true' }, '›'));
+}
+
+async function toggleEvidence(date, key) {
+  const id = evidenceId(date, key);
+  // Closing drops it, so reopening after an edit shows today's numbers.
+  if (local.openEvidence.delete(id)) { local.evidence.delete(id); render(); return; }
+  local.openEvidence.add(id);
+  if (!local.evidence.has(id)) {
+    local.evidence.set(id, { loading: true });
+    render();
+    try {
+      local.evidence.set(id, await api(`/api/time/evidence?date=${date}&key=${encodeURIComponent(key)}`));
+    } catch (err) {
+      local.evidence.set(id, { error: err.message });
+    }
+  }
+  render();
+}
+
+// Same "9:12 AM" format the server uses, in this Mac's local time.
+function clockTime(iso) {
+  const date = new Date(iso);
+  const hours = date.getHours();
+  return `${hours % 12 || 12}:${String(date.getMinutes()).padStart(2, '0')} ${hours < 12 ? 'AM' : 'PM'}`;
+}
+
+function evidenceEvent(event) {
+  return el('li', {},
+    el('time', { datetime: event.at }, clockTime(event.at)),
+    el('span', { class: `ev-dot src-${event.source}`, 'aria-hidden': 'true' }),
+    el('span', { class: 'ev-text' },
+      event.url ? ext(event.url, event.text) : event.text,
+      event.detail && el('span', { class: 'ev-detail' }, ` · ${event.detail}`)));
+}
+
+function outcomeText({ total, outcome }) {
+  if (outcome.mode === 'suggested') {
+    return `= ${formatHours(total)} of ${formatHours(outcome.dayPoints)} points → ${formatHours(outcome.hours)}h of ${formatHours(outcome.dayHours)}h`;
+  }
+  if (outcome.mode === 'saved') {
+    return `Today's evidence suggests ${formatHours(outcome.suggestedHours)}h; you have ${formatHours(outcome.hours)}h`;
+  }
+  return 'Not enough to suggest hours';
+}
+
+function evidenceBody(evidence) {
+  if (evidence.loading) return [el('div', { class: 'sk title' }), el('div', { class: 'sk sub' })];
+  if (evidence.error) return [el('p', { class: 'banner error' }, `Couldn't load the evidence: ${evidence.error}`)];
+  return [
+    el('div', { class: 'ev-head' }, el('strong', {}, `Evidence for ${longDate(evidence.date)}`), el('span', {}, 'Local time')),
+    evidence.events.length
+      ? el('ul', { class: 'timeline' }, evidence.events.map(evidenceEvent))
+      : el('p', { class: 'muted' }, 'No activity found for this ticket on this day.'),
+    el('div', { class: 'weights' },
+      evidence.parts.map((part) => el('span', { class: 'weight' }, `${part.label} `, el('b', {}, formatHours(part.points)))),
+      el('span', { class: 'weight total' }, outcomeText(evidence))),
+  ];
+}
+
+function evidenceRegion(date, key) {
+  const id = evidenceId(date, key);
+  if (!local.openEvidence.has(id)) return null;
+  return el('div', { class: 'evidence', role: 'region', 'aria-label': `Evidence for ${key}` },
+    ...evidenceBody(local.evidence.get(id) ?? { loading: true }));
 }
 
 function dayCard() {
@@ -504,9 +589,12 @@ function ticketRow(date, entry) {
         ticketTitle(entry.key, ticketInfo(entry.key)),
         el('div', { class: 'row-sub' },
           el('span', {}, source),
-          entry.manual && !inTempo && [sep(), el('span', { class: 'manual-tag' }, 'set by you')])),
+          entry.manual && !inTempo && [sep(), el('span', { class: 'manual-tag' }, 'set by you')],
+          buildChip(entry.key),
+          whyButton(date, entry.key, `Why ${formatHours(entry.hours)}h?`))),
       el('div', { class: 'row-trail' },
-        locked ? el('span', { class: 'step-v' }, `${formatHours(entry.hours)}h`) : ticketControls(date, entry))));
+        locked ? el('span', { class: 'step-v' }, `${formatHours(entry.hours)}h`) : ticketControls(date, entry))),
+    evidenceRegion(date, entry.key));
 }
 
 function ticketControls(date, entry) {
@@ -723,6 +811,9 @@ function head() {
       el('div', { class: 'page-sub' },
         'Your Tempo hours, with suggestions from Jira, git, GitHub, and Claude for days not logged yet')),
     el('div', { class: 'time-controls' }, monthNav(), viewSwitch()),
+    month && month.generatedAt && freshness({
+      at: month.generatedAt, intervalMs: MONTH_FRESH_MS, error: local.loadError, onRefresh: () => load(local.ym, { fresh: true }),
+    }),
     month && progressRow(month),
     month && month.tempo && !month.tempo.configured && el('p', { class: 'muted tempo-setup' },
       'Add your Tempo token in ', el('a', { href: '#settings' }, 'Settings'), ' to load and send Tempo hours.'));
@@ -800,6 +891,8 @@ function render() {
   const body = local.mode === 'day' ? [dayStrip(), dayCard()] : [monthGrid()];
   // replaceChildren doesn't flatten arrays or skip nulls, so build a clean list.
   root.replaceChildren(...[head(), tempoBanner(), sourcesBanner(), ...body].filter(Boolean));
+  const day = local.mode === 'day' && serverDay(local.selected);
+  if (day) loadLatestBuilds([...day.entries, ...(day.maybe ?? [])].map((e) => e.key));
   root.querySelector('.day-pill[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'center' });
 }
 

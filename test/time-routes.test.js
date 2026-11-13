@@ -53,7 +53,7 @@ test('month: suggested day sums to 7 with evidence; quiet day is nodata; future 
 test('month days keep the field order the page reads', async () => {
   const month = (await req('GET', '/api/time/month?ym=2026-11')).json();
   const dayFields = ['date', 'state', 'dayHours', 'target', 'leaveHours', 'entries', 'pool', 'suggested', 'maybe'];
-  assert.deepEqual(Object.keys(month), ['ym', 'today', 'dayHours', 'days', 'tickets', 'sources', 'tempo']);
+  assert.deepEqual(Object.keys(month), ['ym', 'today', 'dayHours', 'days', 'tickets', 'sources', 'tempo', 'generatedAt']);
   assert.deepEqual(Object.keys(dayOf(month, '2026-11-09')), dayFields);
   assert.deepEqual(Object.keys(dayOf(month, '2026-11-11')),
     ['date', 'state', 'dayHours', 'target', 'leaveHours', 'entries', 'suggested']);

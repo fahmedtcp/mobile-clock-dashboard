@@ -1,4 +1,4 @@
-import { $, api, el, icon, glyph } from './ui.js';
+import { $, api, el, icon, glyph, startFreshnessTicker } from './ui.js';
 import { diffNotifications, pollDelay } from './notify.js';
 import home from './views/home.js';
 import release from './views/release.js';
@@ -8,6 +8,7 @@ import time from './views/time.js';
 import settings, { applyTheme } from './views/settings.js';
 import { openPalette } from './palette.js';
 import { enablePullToRefresh } from './pull.js';
+import { openTicketPanel } from './tickets-ui.js';
 
 const VIEWS = [home, release, quality, team, time];
 // Settings sits at the bottom of the sidebar, outside the 1–5 shortcuts.
@@ -20,6 +21,7 @@ const badges = {}; // view id -> count shown on the nav item
 
 // Shared data every view can read; refreshed by one polling loop.
 const shared = {
+  loadedAt: { prs: 0, builds: 0, runs: 0 },
   login: '', buildConfig: [], prs: [], prsLoaded: false, ticketError: null, builds: [], runs: [], runsLoaded: false,
   badges: [], runsQuery: '',
 };
@@ -74,6 +76,7 @@ const palette = () => openPalette({
   shared,
   go: show,
   lookup: lookupTicket,
+  openTicket: (key) => openTicketPanel(key),
   setTheme: saveTheme,
 });
 $('palette-btn').addEventListener('click', palette);
@@ -171,6 +174,10 @@ const fetchPollData = () => Promise.allSettled([
 function applyPollResults([prs, builds, runs, statusBadges, pending]) {
   errors.prs = prs.status === 'rejected' ? prs.reason : builds.status === 'rejected' ? builds.reason : null;
   errors.runs = runs.status === 'rejected' ? runs.reason : null;
+  const now = Date.now(); // freshness: when each part of the poll last succeeded
+  if (prs.status === 'fulfilled') shared.loadedAt.prs = now;
+  if (builds.status === 'fulfilled') shared.loadedAt.builds = now;
+  if (runs.status === 'fulfilled') shared.loadedAt.runs = now;
   if (prs.status === 'fulfilled') {
     Object.assign(shared, { prs: prs.value.prs, ticketError: prs.value.ticketError, prsLoaded: true });
   }
@@ -248,6 +255,7 @@ window.addEventListener('hashchange', () => {
 api('/api/settings')
   .then((saved) => { shared.settings = saved; applyTheme(saved.theme); })
   .catch(() => { /* keep the local theme */ });
+startFreshnessTicker();
 renderNav();
 show(current);
 checkJira();

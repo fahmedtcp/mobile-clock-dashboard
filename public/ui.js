@@ -91,8 +91,9 @@ export function ticketChip(ticket, key) {
       ? el('span', { class: 'chip' }, key)
       : el('span', { class: 'chip', title: 'No TCPMOB key in branch or title' }, 'No Ticket');
   }
-  return ext(ticket.url, el('span', { class: `chip ${STATUS_COLORS[ticket.status] ?? ''}`, title: ticket.summary },
-    `${ticket.key} · ${ticket.status}`));
+  // Opens the ticket panel (tickets-ui.js listens for data-ticket-key); the panel links on to Jira.
+  return el('button', { type: 'button', class: 'chip-button', 'data-ticket-key': ticket.key, title: ticket.summary },
+    el('span', { class: `chip ${STATUS_COLORS[ticket.status] ?? ''}` }, `${ticket.key} · ${ticket.status}`));
 }
 
 // ---------- icons (hand-drawn 24px strokes, SF Symbols-like) ----------
@@ -264,4 +265,61 @@ export function section(id, title, look, ...headExtras) {
       ...headExtras),
     el('div', { class: 'banner error', role: 'alert', id: `${id}-error`, hidden: true }),
     el('ul', { class: 'group', id }));
+}
+
+// ---------- freshness labels ----------
+// "Updated 3 min ago" on a section. Green while fresh, orange once older than twice its refresh interval
+// (with Refresh), red when the last load failed (with Retry). One ticker repaints every label in place.
+
+const FRESH_TICK_MS = 30000;
+
+function ageText(ms) {
+  if (ms < 60000) return 'Updated just now';
+  if (ms < 3600000) return `Updated ${Math.floor(ms / 60000)} min ago`;
+  return `Updated ${Math.floor(ms / 3600000)} hr ago`;
+}
+
+function freshnessState(node) {
+  if (node.dataset.error) return 'error';
+  const age = Date.now() - Number(node.dataset.at);
+  return age > 2 * Number(node.dataset.interval) ? 'stale' : 'ok';
+}
+
+function renderFreshness(node) {
+  const hasData = Boolean(node.dataset.at);
+  node.hidden = !hasData && !node.dataset.error;
+  if (node.hidden) return;
+  const state = freshnessState(node);
+  const label = state === 'error' ? "Couldn't update" : ageText(Date.now() - Number(node.dataset.at));
+  const action = state === 'ok' ? null : state === 'error' ? 'Retry' : 'Refresh';
+  node.className = `fresh ${state === 'ok' ? '' : state}`.trim();
+  // replaceChildren takes nodes and strings only: no nulls, no nested arrays.
+  const retry = action && node.onRefresh ? [' · ', el('button', { type: 'button', onclick: () => node.onRefresh() }, action)] : [];
+  node.replaceChildren(el('span', { class: 'fresh-dot', 'aria-hidden': 'true' }), label, ...retry);
+}
+
+// Update a label in place with { at: ms|ISO, intervalMs, error, onRefresh }.
+export function paintFreshness(node, { at, intervalMs, error = null, onRefresh = null }) {
+  const time = typeof at === 'string' ? Date.parse(at) : at;
+  node.dataset.at = time ? String(time) : '';
+  node.dataset.interval = String(intervalMs);
+  node.dataset.error = error ? '1' : '';
+  node.title = error ? (error.message ?? String(error)) : '';
+  node.onRefresh = onRefresh;
+  renderFreshness(node);
+  return node;
+}
+
+export const freshness = (options) => paintFreshness(el('span', { class: 'fresh' }), options);
+
+export function startFreshnessTicker() {
+  setInterval(() => document.querySelectorAll('.fresh').forEach(renderFreshness), FRESH_TICK_MS);
+}
+
+// Add or update the label next to a section's title.
+export function sectionFreshness(id, options) {
+  const title = document.getElementById(`${id}-section`)?.querySelector('.section-title');
+  if (!title) return;
+  const node = title.querySelector('.fresh');
+  if (node) paintFreshness(node, options); else title.append(freshness(options));
 }
