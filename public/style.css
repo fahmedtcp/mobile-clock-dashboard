@@ -1016,7 +1016,7 @@ main { position: relative; }
 .home-cards {
   --soft-blue: #3f6fc6; --soft-indigo: #5a5fae; --soft-purple: #8a64ad; --soft-green: #3d8f5a;
   --soft-orange: #b97a2e; --soft-red: #c4554c; --soft-teal: #4b8f9b;
-  display: flex; flex-direction: column; gap: 16px; margin-bottom: 16px;
+  display: flex; flex-direction: column; gap: 16px; margin: 20px 0 16px; /* breathing room above the top card */
 }
 :root[data-theme="dark"] .home-cards {
   --soft-blue: #6f93d6; --soft-indigo: #8a8dd0; --soft-purple: #a98bc6; --soft-green: #6fb487;
@@ -1049,19 +1049,31 @@ main { position: relative; }
 .mate .qa { color: var(--label-3); font-weight: 500; }
 .mate .doing { font-size: 12px; color: var(--label-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
-.shiftline { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: center;
+.shiftline { grid-column: 1 / -1; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: start;
   padding-top: 14px; box-shadow: 0 -.5px 0 var(--separator); font-size: 12px; color: var(--label-2); font-variant-numeric: tabular-nums; }
 .shiftline .rail { position: relative; height: 24px; }
+.shiftline > span { padding-top: 3px; }
 .shiftline i { font-style: normal; }
 .shiftline .base, .shiftline .past { position: absolute; left: 0; top: 10px; height: 4px; border-radius: 2px; }
 .shiftline .base { right: 0; background: var(--fill); }
 .shiftline .past { background: var(--label-3); }
-.shiftline .now { position: absolute; top: 6px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--card); box-shadow: 0 0 0 2.5px var(--label); }
+.shiftline .now { position: absolute; z-index: 2; top: 6px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--card); box-shadow: 0 0 0 2.5px var(--label); }
 .shiftline .pin { position: absolute; top: 5px; width: 1.5px; height: 14px; background: var(--label-3); }
-.shiftline .mtg { position: absolute; top: 6px; height: 12px; border-radius: 3px; background: color-mix(in srgb, var(--soft-indigo) 60%, transparent); }
-.shiftline .pin span, .shiftline .mtg span { position: absolute; top: -14px; left: 0; white-space: nowrap; font-size: 10.5px; color: var(--label-2); font-weight: 600; }
-.shiftline .pin span { left: 50%; transform: translateX(-50%); color: var(--label-3); font-weight: 500; }
-.shiftline .mtg.r span { left: auto; right: 0; }
+.shiftline .mtg { position: absolute; top: 3px; height: 18px; min-width: 14px; border-radius: 6px; background: color-mix(in srgb, var(--soft-indigo) 60%, transparent); }
+.shiftline .mtg.done { background: color-mix(in srgb, var(--label-3) 70%, transparent); }
+.shiftline .mtg.next { background: var(--soft-indigo); }
+.shiftline .mtg.live { background: var(--soft-green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--soft-green) 25%, transparent); animation: mtg-live 2s ease-in-out infinite; }
+@keyframes mtg-live { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--soft-green) 0%, transparent); } }
+.shiftline .stem { position: absolute; top: 22px; width: 1px; height: 8px; background: var(--label-3); }
+.shiftline .mlbl { position: absolute; z-index: 1; padding: 0 4px; border-radius: 4px; background: var(--card); top: 30px; font-size: 11.5px; line-height: 1.3; white-space: nowrap; color: var(--label-3); }
+.shiftline .mlbl.c { transform: translateX(-50%); text-align: center; }
+.shiftline .mlbl.r { transform: translateX(-100%); text-align: right; }
+.shiftline .mlbl b { color: var(--label); font-weight: 600; }
+.shiftline .mlbl.done b { color: var(--label-3); font-weight: 500; }
+.shiftline .mlbl .tag { display: inline-block; font-size: 10px; font-weight: 700; border-radius: 5px; padding: 0 5px; margin-left: 4px; vertical-align: 1px; }
+.shiftline .mlbl .tag.live { background: color-mix(in srgb, var(--soft-green) 22%, transparent); color: var(--soft-green); }
+.shiftline .mlbl .tag.next { background: color-mix(in srgb, var(--soft-indigo) 25%, transparent); color: var(--soft-indigo); }
+@media (prefers-reduced-motion: reduce) { .shiftline .mtg.live { animation: none; } }
 .left-time b { color: var(--label); font-size: 13px; }
 
 .hc-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 16px; align-items: start; }

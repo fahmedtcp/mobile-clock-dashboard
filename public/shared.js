@@ -80,3 +80,19 @@ export function shiftState(now, { start, end, wrapMinutes }) {
   const moment = now - shiftStart < START_MOMENT_MS ? 'start' : minutesLeft <= wrapMinutes ? 'wrap' : 'mid';
   return { ...base, moment, phase: 'during', progress, minutesLeft };
 }
+
+// Shift line labels: each [left, right] (px) gets the lowest row where it doesn't touch a label to its left.
+const LABEL_GAP = 6;
+export function labelRows(spans) {
+  const rowEnds = [];
+  const rows = new Array(spans.length);
+  const order = spans.map((span, i) => i).sort((a, b) => spans[a][0] - spans[b][0]);
+  for (const i of order) {
+    const [left, right] = spans[i];
+    let row = rowEnds.findIndex((end) => end + LABEL_GAP <= left);
+    if (row === -1) row = rowEnds.length;
+    rowEnds[row] = right;
+    rows[i] = row;
+  }
+  return rows;
+}

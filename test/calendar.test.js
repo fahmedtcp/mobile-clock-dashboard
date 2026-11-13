@@ -127,3 +127,33 @@ test('runs as a signed app bundle through open, so macOS can ask for calendar ac
   assert.deepEqual(run.args.filter((a) => a.startsWith('-') && !a.startsWith('--')), ['-W', '-n', '-g']);
   assert.deepEqual(run.args.slice(-4), [app, '--args', FROM, TO]);
 });
+
+test('an error keeps a short reason from open, never the helper output', async () => {
+  const { exec } = fakeExec(ok([]));
+  const failing = async (file, args, opts) => (file === 'open'
+    ? { stdout: '', stderr: 'LSOpenURLsWithRole() failed with error -600 for the file /x/CalendarHelper.app.', code: 1 }
+    : exec(file, args, opts));
+  const cal = createCalendar({ exec: failing, cacheDir: mkdtempSync(path.join(tmpdir(), 'cal-')), enabled: () => true });
+  await cal.meetings(FROM, TO);
+  assert.equal(cal.status(), 'error');
+  assert.equal(cal.reason(), 'open exited 1: LSOpenURLsWithRole() failed with error -600 for the file /x/CalendarHelper.app.');
+});
+
+test('open losing track of an app that already finished still counts its output', async () => {
+  const { exec } = fakeExec(ok([meeting('Standup')]));
+  const racing = async (file, args, opts) => {
+    const result = await exec(file, args, opts);
+    return file === 'open'
+      ? { ...result, code: 1, stderr: 'Unable to block on applications (initial call to kevent() failed: No such process)' }
+      : result;
+  };
+  const cal = createCalendar({ exec: racing, cacheDir: mkdtempSync(path.join(tmpdir(), 'cal-')), enabled: () => true });
+  assert.equal((await cal.meetings(FROM, TO)).length, 1);
+  assert.equal(cal.status(), 'ok');
+});
+
+test('two loads at once share one helper run', async () => {
+  const { cal, calls } = setup(ok([meeting('Standup')]));
+  await Promise.all([cal.meetings(FROM, TO), cal.meetings(FROM, TO)]);
+  assert.equal(helperCalls(calls), 1);
+});

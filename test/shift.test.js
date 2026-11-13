@@ -40,3 +40,12 @@ test('prevShiftEnd is the last shift end before now, skipping weekends', () => {
   assert.equal(at('2026-11-13T23:00:00+05:00').prevShiftEnd.toISOString(), new Date('2026-11-13T22:00:00+05:00').toISOString());
   assert.equal(at('2026-11-12T13:30:00+05:00').prevShiftEnd.toISOString(), new Date('2026-11-11T22:00:00+05:00').toISOString());
 });
+
+test('labelRows puts touching labels on the next free row', async () => {
+  const { labelRows } = await import('../public/shared.js');
+  // [left, right] in pixels, any order; 6px gap required between labels on one row.
+  assert.deepEqual(labelRows([[600, 700], [720, 820], [690, 780], [900, 980]]), [0, 0, 1, 0]);
+  assert.deepEqual(labelRows([[0, 100], [50, 150], [60, 160]]), [0, 1, 2]);
+  assert.deepEqual(labelRows([[0, 100], [103, 200]]), [0, 1], 'closer than 6px counts as touching');
+  assert.deepEqual(labelRows([]), []);
+});
