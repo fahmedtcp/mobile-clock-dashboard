@@ -64,3 +64,17 @@ test('getPr and updateBranch call the right gh commands', async () => {
   assert.deepEqual(calls[0], ['pr', 'view', '5', '-R', 'tcp-software/mobile-clock', '--json', 'number,state,headRefName,baseRefName,reviewDecision,isCrossRepository']);
   assert.deepEqual(calls[1], ['api', '-X', 'PUT', 'repos/tcp-software/mobile-clock/pulls/5/update-branch']);
 });
+
+test('listPrs keeps failing check names and the newest changes-requested review', async () => {
+  const gh = { json: async () => [{ number: 7, title: 't', url: 'u', author: { login: 'me' }, headRefName: 'h', baseRefName: 'develop',
+    isDraft: false, reviewDecision: 'CHANGES_REQUESTED', createdAt: daysAgo(1), reviewRequests: [],
+    statusCheckRollup: [{ name: 'eslint', conclusion: 'FAILURE' }, { name: 'unit', conclusion: 'SUCCESS' }, { context: 'ci/legacy', state: 'ERROR' }],
+    latestReviews: [
+      { state: 'CHANGES_REQUESTED', submittedAt: daysAgo(3), body: 'old', author: { login: 'raja' } },
+      { state: 'CHANGES_REQUESTED', submittedAt: daysAgo(1), body: 'use the token', author: { login: 'hamza' } },
+    ] }] };
+  const [pr] = await listPrs(gh);
+  assert.deepEqual(pr.failedChecks, ['eslint', 'ci/legacy']);
+  assert.equal(pr.changesBody, 'use the token');
+  assert.equal(pr.changesBy, 'hamza');
+});

@@ -1,0 +1,205 @@
+// Card builders for the shift-aware Home. Each takes data from /api/home plus `act(action)` and returns a node (or null).
+// All text goes through el() → textContent, so Jira and calendar text can never become markup.
+import { el, glyph, freshness } from '../ui.js';
+import { ticketLink } from '../tickets-ui.js';
+import { shiftState } from '../shared.js';
+
+const STAGE_COUNT = 5;
+const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const pctOfShift = (shift, iso) => {
+  const start = Date.parse(shift.shiftStart);
+  return Math.min(100, Math.max(0, ((Date.parse(iso) - start) / (Date.parse(shift.shiftEnd) - start)) * 100));
+};
+const hm = (minutes) => (minutes >= 60 ? `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m` : `${minutes}m`);
+
+function actionButton(action, act, { filled = false } = {}) {
+  if (!action) return null;
+  return el('button', { type: 'button', class: `btn btn-small ${filled ? 'btn-filled' : ''}`, onclick: (e) => { e.stopPropagation(); act(action); } },
+    action.label);
+}
+
+function card(id, title, look, { count = null, hot = false, trail = null } = {}, ...body) {
+  return el('section', { class: 'hc', id: `hc-${id}`, 'aria-labelledby': `hc-${id}-h` },
+    el('div', { class: 'hc-head' }, glyph(look[0], look[1], 'sm'),
+      el('h3', { id: `hc-${id}-h` }, title),
+      count != null && el('span', { class: `hc-count ${hot ? 'hot' : ''}` }, String(count)),
+      trail && el('span', { class: 'hc-trail' }, trail)),
+    ...body);
+}
+
+// ---------- hero ----------
+
+function nextMeetingText(meetings, now) {
+  const next = meetings.find((m) => Date.parse(m.start) > now);
+  if (!next) return null;
+  const minutes = Math.round((Date.parse(next.start) - now) / 60000);
+  return `${next.title} in ${minutes >= 60 ? `${Math.round(minutes / 60)}h` : `${minutes} min`}`;
+}
+
+// The server's clock, moved forward by the time since the response arrived.
+export const nowOf = (home) => new Date(Date.parse(home.now) + (Date.now() - (home.fetchedAt ?? Date.now())));
+
+export function shiftLine(shift, meetings, now) {
+  if (shift.phase === 'weekend') return null;
+  const live = shiftState(now, shift);
+  const pct = live.progress * 100;
+  const left = live.phase === 'before' ? `Starts in ${hm(live.startsInMinutes)}`
+    : live.phase === 'after' ? 'Shift over' : `${hm(live.minutesLeft)} left`;
+  const label = (hhmm) => new Date(`2000-01-01T${hhmm}:00`).toLocaleTimeString([], { hour: 'numeric' });
+  return el('div', { class: 'shiftline', role: 'img', 'aria-label': `Shift ${label(shift.start)} to ${label(shift.end)}, ${left}` },
+    el('span', {}, label(shift.start)),
+    el('div', { class: 'rail', 'aria-hidden': 'true' },
+      el('i', { class: 'base' }), el('i', { class: 'past', style: `width:${pct}%` }),
+      el('i', { class: 'pin', style: `left:${100 - (shift.wrapMinutes / ((Date.parse(shift.shiftEnd) - Date.parse(shift.shiftStart)) / 60000)) * 100}%`, title: 'Wrap-up starts' }),
+      ...meetings.map((m) => {
+        const from = pctOfShift(shift, m.start);
+        const width = Math.max(0.8, pctOfShift(shift, m.end) - from);
+        return el('i', { class: `mtg ${from > 75 ? 'r' : ''}`, style: `left:${from}%;width:${width}%`, title: `${m.title} · ${clock(m.start)}` },
+          el('span', {}, m.title));
+      }),
+      live.phase === 'during' && el('i', { class: 'now', style: `left:${pct}%` })),
+    el('span', { class: 'left-time' }, label(shift.end), ' · ', el('b', {}, left)));
+}
+
+export function heroCard(home, act) {
+  const now = Date.parse(home.now);
+  const date = new Date(now).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
+  const meetingNote = nextMeetingText(home.meetings, now);
+  const { headline } = home;
+  const team = home.team.length ? el('div', { class: 'team' },
+    el('div', { class: 'team-h' }, home.shift.phase === 'during' ? 'On Shift Now' : 'Team'),
+    home.team.map((m) => el('div', { class: 'mate' },
+      el('span', { class: `av ${m.onShift ? 'on' : ''}`, 'aria-hidden': 'true' }, m.you ? 'You' : initials(m.name)),
+      el('span', { class: 'who' }, m.name, m.qa ? el('span', { class: 'qa' }, ' · QA') : null),
+      el('span', { class: 'doing' }, m.doing)))) : null;
+  return el('section', { class: `hero-card ${team ? '' : 'solo'}`, 'aria-label': 'Your shift' },
+    el('div', {},
+      el('div', { class: 'hello' }, [date, clock(home.now), meetingNote].filter(Boolean).join(' · '),
+        ' ', freshness({ at: home.generatedAt, intervalMs: 60000 })),
+      ...[home.errors.github && `GitHub didn't load, so pull request details are missing: ${home.errors.github}`, home.errors.calendar]
+        .filter(Boolean).map((text) => el('p', { class: 'hero-warn', role: 'status' }, text)),
+      el('h2', { class: 'headline' }, headline.text),
+      headline.sub && el('p', { class: 'subline' }, headline.sub),
+      (headline.action || headline.secondary) && el('div', { class: 'hero-actions' },
+        actionButton(headline.action, act, { filled: true }), actionButton(headline.secondary, act))),
+    team,
+    shiftLine(home.shift, home.meetings, nowOf(home)));
+}
+
+const initials = (name) => name.split(/\s+/).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
+
+// ---------- my work ----------
+
+function stageDots(row) {
+  const dots = [];
+  for (let i = 0; i < STAGE_COUNT; i++) {
+    const state = i < row.stageIndex ? 'done' : i === row.stageIndex ? row.tone : '';
+    if (i) dots.push(el('i', { class: `ln ${i <= row.stageIndex ? 'done' : ''}` }));
+    dots.push(el('i', { class: `stp ${state}` }));
+  }
+  return el('div', { class: 'steps-col' }, el('div', { class: 'steps', 'aria-hidden': 'true' }, dots), el('div', { class: 'stage' }, row.stageLabel));
+}
+
+export function workCard(rows, act, error) {
+  const body = rows.length
+    ? rows.map((row) => el('div', {
+      class: 'tk', role: 'button', tabindex: '0', 'aria-label': `${row.key}: ${row.blocker.text}`,
+      onclick: (e) => { if (!e.target.closest('button')) act({ kind: 'open-ticket', key: row.key }); },
+      onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) act({ kind: 'open-ticket', key: row.key }); },
+    },
+    el('div', { class: 'tk-id' }, ticketLink(row.key), el('span', { class: 'sum' }, row.summary)),
+    stageDots(row),
+    el('div', { class: 'block' }, el('b', {}, row.blocker.text), row.blocker.quote && el('span', { class: 'muted' }, ` “${row.blocker.quote}”`),
+      row.blocker.detail && el('span', { class: 'muted' }, ` ${row.blocker.detail}`)),
+    el('div', { class: 'acts' }, actionButton(row.action, act, { filled: row.tone === 'bad' || row.blocker.kind === 'qa-missing-platform' }))))
+    : [el('p', { class: 'muted hc-empty' }, error ? `Couldn't load your tickets: ${error}` : 'No tickets assigned to you right now.')];
+  return card('work', 'My Work', ['ticket', 'purple'], { count: rows.length, trail: 'Click a ticket for its panel' }, ...body);
+}
+
+// ---------- feed ----------
+
+export function feedCard(items, { id, title, onMarkRead, emptyText }) {
+  const unread = items.filter((i) => i.unread).length;
+  const body = items.length ? items.map((item) => el('div', { class: `item ${item.unread ? 'unread' : ''}` },
+    el('span', { class: 'dot', 'aria-hidden': 'true' }),
+    el('span', { class: 'av', 'aria-hidden': 'true' }, initials(item.who)),
+    el('div', { class: 'body' }, el('b', {}, item.who), ` ${item.text}`, item.quote && el('div', { class: 'quote' }, item.quote)),
+    el('span', { class: 'when' }, clock(item.at))))
+    : [el('p', { class: 'muted hc-empty' }, emptyText)];
+  const trail = onMarkRead && unread ? el('button', { type: 'button', class: 'link-btn', onclick: onMarkRead }, 'Mark read') : null;
+  return card(id, title, ['sparkle', 'blue'], { count: unread || null, hot: unread > 0, trail }, ...body);
+}
+
+// ---------- waiting, today, plan, standup, wrap, note ----------
+
+export function waitingCard(waiting, act) {
+  const rows = [
+    ...waiting.reviews.map((r) => el('div', { class: 'rowx' },
+      el('div', { class: 't' }, el('b', {}, `Review #${r.pr} for ${r.author}`), el('div', { class: 's' }, r.title)),
+      actionButton({ kind: 'open-url', label: 'Open', url: r.url }, act))),
+    waiting.hoursPending > 0 && el('div', { class: 'rowx' },
+      el('div', { class: 't' }, el('b', {}, `Confirm ${waiting.hoursPending} ${waiting.hoursPending === 1 ? 'day' : 'days'} of hours`),
+        el('div', { class: 's' }, 'Suggestions ready · not in Tempo yet')),
+      actionButton({ kind: 'go', label: 'Open Time', view: 'time' }, act)),
+  ].filter(Boolean);
+  if (!rows.length) return null;
+  return card('waiting', 'Waiting on You', ['clock', 'orange'], { count: rows.length }, ...rows);
+}
+
+export function todayCard(shift, meetings) {
+  const blocks = [];
+  let cursor = Date.parse(shift.shiftStart);
+  const end = Date.parse(shift.shiftEnd);
+  const free = (from, to) => to - from >= 15 * 60000 && blocks.push({ free: true, from, to });
+  for (const m of meetings.filter((x) => Date.parse(x.end) > cursor && Date.parse(x.start) < end)) {
+    free(cursor, Date.parse(m.start));
+    blocks.push({ free: false, from: Date.parse(m.start), to: Date.parse(m.end), title: m.title });
+    cursor = Math.max(cursor, Date.parse(m.end));
+  }
+  free(cursor, end);
+  return card('today', "Today's Shift", ['calendar', 'indigo'], { trail: meetings.length ? 'From your calendar' : 'No meetings' },
+    ...blocks.map((b) => el('div', { class: 'mrow' },
+      el('span', { class: `bar ${b.free ? 'free' : ''}`, 'aria-hidden': 'true' }),
+      el('time', {}, `${clock(new Date(b.from).toISOString())} – ${clock(new Date(b.to).toISOString())}`),
+      el('div', { class: 't' }, el('b', {}, b.free ? 'Focus' : b.title), el('div', { class: 's' }, hm(Math.round((b.to - b.from) / 60000)))))));
+}
+
+export function planCard(plan, act) {
+  if (!plan.length) return null;
+  return card('plan', 'Plan for This Shift', ['bolt', 'teal'], {},
+    el('ol', { class: 'plan' }, plan.map((p) => el('li', { class: 'rowx' },
+      el('div', { class: 't' }, el('b', {}, p.key), el('div', { class: 's' }, p.text)), actionButton(p.action, act)))));
+}
+
+export function standupCard(standup, act) {
+  if (!standup) return null;
+  const text = `Yesterday: ${standup.yesterday}\nToday: ${standup.today}\nBlocked: ${standup.blocked}`;
+  return card('standup', `Standup at ${clock(standup.at)}`, ['team', 'green'], {
+    trail: el('button', { type: 'button', class: 'link-btn', onclick: () => act({ kind: 'copy', text, done: 'Standup copied.' }) }, 'Copy'),
+  }, el('div', { class: 'note' },
+    el('b', {}, 'Yesterday'), el('p', {}, standup.yesterday),
+    el('b', {}, 'Today'), el('p', {}, standup.today),
+    el('b', {}, 'Blocked'), el('p', {}, standup.blocked)),
+  el('p', { class: 'foot' }, 'From your Jira changes, commits, PRs, and builds. Never chat text.'));
+}
+
+export function wrapCard(items, act) {
+  if (!items.length) return null;
+  const left = items.filter((i) => !i.done).length;
+  return card('wrap', 'Before You Log Off', ['moon', 'indigo'], { count: left || null, hot: left > 0 },
+    ...items.map((item) => el('div', { class: `check ${item.done ? 'ok' : ''}` },
+      el('span', { class: `box ${item.done ? 'ok' : 'todo'}`, 'aria-hidden': 'true' }, item.done ? '✓' : ''),
+      el('div', { class: 't' }, el('b', {}, item.title), el('div', { class: 's' }, item.sub)),
+      !item.done && actionButton(item.action, act))));
+}
+
+export function noteCard(note, { editable, onSave }) {
+  if (!editable && !note) return null;
+  const body = editable
+    ? el('textarea', {
+      class: 'field note-edit', rows: '4', maxlength: '1000', placeholder: 'Start with… Waiting on… Left off…', 'aria-label': 'Note for tomorrow',
+      onchange: (e) => onSave(e.target.value),
+    }, note?.text ?? '')
+    : el('p', { class: 'note-text' }, note.text);
+  return card('note', 'Note for Tomorrow', ['check', 'green'], { trail: editable ? 'Shows at the start of your next shift' : null }, body);
+}

@@ -25,6 +25,20 @@ const HELP = {
       'Make sure your account can see the tcp-software organization, then press Check Again.',
     ],
   },
+  shift: {
+    steps: [
+      'Your shift hours. Home uses them for its start, mid-shift, and wrap-up views and for the shift line.',
+      'Wrap-up is how long before the end of the shift Home switches to Before You Log Off.',
+      'Calendar reads meetings from the Calendar app on this Mac. Titles stay on this Mac and aren\'t used for Time. macOS asks for permission once.',
+    ],
+  },
+  team: {
+    steps: [
+      'One teammate per line: name, GitHub login, Jira email, and QA if they test tickets.',
+      'For example: Sana Ali, sana-qa, sana@tcpsoftware.com, QA',
+      'Used for On Shift Now and to recognize QA on your tickets. Everyone shares your shift hours.',
+    ],
+  },
   jira: {
     steps: [
       'Jira URL: the address you use for Jira, for example https://timeclockplus.atlassian.net.',
@@ -431,6 +445,36 @@ function reviewRequests() {
   ]);
 }
 
+// One teammate per line: "Name, github, email[, QA]". Lines missing a part are dropped; the server checks the rest.
+function parseTeam(text) {
+  return text.split('\n').map((line) => line.split(',').map((x) => x.trim())).filter(([name, github, email]) => name && github && email)
+    .map(([name, github, jiraEmail, qa = '']) => ({ name, github, jiraEmail, qa: /^qa$/i.test(qa) }));
+}
+
+function shiftAndTeam() {
+  const { shift, calendar, team } = view;
+  const time = (name, label) => onChangeSave(el('input', { class: 'field compact', type: 'time', value: shift[name], 'aria-label': label }),
+    (input) => input.value && { shift: { [name]: input.value } });
+  const wrap = onChangeSave(el('select', { class: 'field compact', 'aria-label': 'Wrap-up length' },
+    [15, 30, 40, 45, 60, 90, 120].map((m) => el('option', { value: String(m), selected: shift.wrapMinutes === m }, `${m} min`))),
+  (input) => ({ shift: { wrapMinutes: Number(input.value) } }));
+  const cal = onChangeSave(el('input', { type: 'checkbox', role: 'switch', checked: calendar.on, 'aria-label': 'Read meetings from Calendar' }),
+    (input) => ({ calendar: { on: input.checked } }));
+  const people = el('textarea', {
+    class: 'field', rows: '4', spellcheck: 'false', placeholder: 'Sana Ali, sana-qa, sana@tcpsoftware.com, QA', 'aria-label': 'Teammates',
+  });
+  people.value = team.people.map((p) => [p.name, p.github, p.jiraEmail, p.qa && 'QA'].filter(Boolean).join(', ')).join('\n');
+  onChangeSave(people, (input) => ({ team: { people: parseTeam(input.value) } }));
+  return group('Shift and Team', [
+    rowShell({ title: 'Shift', sub: 'Start, end, and wrap-up', look: ['clock', 'indigo'], help: 'shift',
+      trail: [time('start', 'Shift start'), time('end', 'Shift end'), wrap] }),
+    rowShell({ title: 'Meetings from Calendar', sub: 'Shows meetings on the shift line. Never used for Time.',
+      look: ['calendar', 'purple'], trail: el('label', { class: 'switch' }, cal) }),
+    rowShell({ title: 'Team', sub: 'For On Shift Now and recognizing QA', look: ['team', 'teal'], help: 'team',
+      trail: null, body: el('div', { class: 'conn-edit' }, people) }),
+  ]);
+}
+
 function buildsAndNotifications() {
   const checked = new Set(view.builds.defaultChecked);
   const boxes = el('div', { class: 'build-defaults' }, builds.map((build) => {
@@ -470,7 +514,7 @@ function render() {
     el('div', { class: 'page-sub' }, 'Saved on this Mac only. Keys go only to the service they belong to.')));
   if (error) { root.replaceChildren(head, el('div', { class: 'banner error' }, error.message)); return; }
   if (!view) { root.replaceChildren(head); return; }
-  root.replaceChildren(head, connections(), appearance(), timeTracking(), reviewRequests(), buildsAndNotifications());
+  root.replaceChildren(head, connections(), appearance(), timeTracking(), shiftAndTeam(), reviewRequests(), buildsAndNotifications());
 }
 
 export default {

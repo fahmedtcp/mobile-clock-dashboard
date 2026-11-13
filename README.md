@@ -78,13 +78,20 @@ Set `NO_OPEN=1` to start without opening a browser tab. Link straight to a view 
 
 ## Views
 
-**Home**
-- **Needs Attention:** finished tickets with open PRs, merged PRs whose ticket is still active, PRs with no ticket, and your active tickets with no branch
+**Home** follows your shift (Settings → Shift and Team; default 1–10 PM, wrap-up in the last 40 minutes)
+- **Top card:** one sentence about the most important thing right now, with its button; who's on shift and what they're working on; and a 1–10 PM shift line with today's meetings
+- **My Work:** one row per ticket with its stage, what's blocking it (QA sent it back, checks failed, changes requested, merged with no build, QA testing one platform, behind develop, and more), and the one button that fixes it. Click a row for the ticket panel
+- **Start of shift:** Since Last Shift, Today's Shift (focus time between meetings), Plan for This Shift, and your Note for Tomorrow
+- **Mid-shift:** Since You Last Looked (other people's comments, reviews, and status changes), a Standup draft before a meeting named "standup," and Waiting on You
+- **Wrap-up:** Before You Log Off (ticket branches with unpushed commits from the last 14 days, with **Copy push command**; QA requests; today's hours) and an editable Note for Tomorrow
 - **Triggered Builds:** builds you started here, with live status, retry attempts, failure reason, and failure type
-- **My Tickets:** your active TCPMOB tickets, with Start on To Do and Open tickets
-- **My Pull Requests:** ticket status, checks, review state, staleness, commits behind base, the AI review summary, and an on-demand TypeScript check
-- **Which Build Has My Fix?:** enter a ticket key to see every build posted to it, its PR, and whether it's merged
-- **Actions:** recent workflow runs with filters, Rerun, and Cancel
+- **More:** Pull Requests (Mine and Review Requested), Which Build Has My Fix?, and Actions
+
+**Team** (Settings → Shift and Team): one teammate per line, `Name, github-login, jira-email, QA`. Used for On Shift Now and to recognize QA on your tickets.
+
+**Meetings** (Settings → Meetings from Calendar, off by default): read from the Calendar app on this Mac through a small Swift helper the dashboard compiles the first time (`tools/calendar.swift`, needs the Xcode command line tools). macOS asks for calendar access once. Titles stay in memory on this Mac: they're never saved, logged, or used for Time.
+
+The dashboard never pushes or changes your mobile-clock clone. It only reads it.
 
 **Release**
 - The current "Mobile NN" fix version, days left, and whether its release branch is cut

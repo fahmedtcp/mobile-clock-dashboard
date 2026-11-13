@@ -52,7 +52,7 @@ The user, their teammates, and QA (Sana, in Pakistan) all work the same **1–10
   - "Sana sent it back: 'still shows on empty filter.'" → **Open PR**
   - "Hamza left 3 threads · 'use the theme spacing token'" → **Open threads**
   - "Lint failed · 2 errors in useLinkingActions.ts · 9 behind develop" → **Update branch**
-  - "Merged 5 days ago, no build since. QA's latest build doesn't have the fix." → **Build develop**
+  - "Merged 5 days ago, no build since. QA's latest build doesn't have the fix." → **Open ticket** (no develop builds from Home; the user said it isn't needed)
 - **Since You Last Looked**: unread dot, avatar, who did what on which ticket or PR, the comment text in a bubble, and the time. "Mark read".
 - **Builds**: only failed and running builds, with the error line in monospace, whether it's a runner problem or the code (from the existing classification), and **Rerun**.
 - **Waiting on You**: reviews requested from the user, and unconfirmed hours (existing Time pending count).
@@ -68,7 +68,7 @@ The shift is split by time; the hero headline, the shift line, and which cards s
 | Mid | after the first hour, until wrap-up | **Since You Last Looked**, **Builds**, **Standup at <time>** draft (when a standup meeting is coming up today), **Waiting on You** |
 | Wrap-up | last 40 minutes | **Before You Log Off** checklist, **Note for Tomorrow** |
 
-- **Before You Log Off** items, each with a button and checked off when done: unpushed local commits on a ticket branch (push and open the PR so the reviewer has it at 1 PM); today's hours not confirmed; a merged ticket with no build since (start one so QA has it at the start of the next shift); completed items stay visible, struck through.
+- **Before You Log Off** items, each with a button and checked off when done: unpushed local commits on a ticket branch (push and open the PR so the reviewer has it at 1 PM); today's hours not confirmed; completed items stay visible, struck through.
 - **Note for Tomorrow**: an editable draft (start with, waiting on, left off) that shows at the top of Home at the next shift start.
 - **Standup draft**: Yesterday, Today, Blocked, built from the same evidence the Time view uses (Jira changes, commits, PRs, builds; never Claude chat text), covering the period since the previous standup. **Copy** only.
 
@@ -84,11 +84,10 @@ The shift is split by time; the hero headline, the shift line, and which cards s
 - **Shift settings:** shift start and end (default 13:00 and 22:00), wrap-up length (default 40 minutes), and a calendar on/off switch, in Settings with info tips. Defaults are the user's shift; teammates can change them.
 - **Teammates:** a new **Team** setting, a list of people, each with name, GitHub login, Jira email, and a QA checkbox. `teams.people` (GitHub login to email, for Teams @mentions) stays as is. "On shift now", QA blockers ("Sana is testing…"), and Since Last Shift all use this list. With no list, those parts hide and the rest of Home works. Everyone shares the user's shift hours; per-person hours aren't needed.
 - **"Since you last looked"** is stored as one timestamp per user in the dashboard's data dir, updated by **Mark read** and when the card has been on screen for a few seconds.
-- **Build Lookup** moves to ⌘K only (it already has "Which build has KEY?"). **Actions** leaves Home; it stays reachable from the PR and build rows and ⌘K. **Needs Attention** items fold into My Work blockers or Since You Last Looked.
+- **Build Lookup** moves to ⌘K only (it already has "Which build has KEY?"). **Actions** and the full PR list move into a collapsed **More** section at the bottom of Home, so no current feature is lost. **Needs Attention** items fold into My Work blockers or Since You Last Looked.
 - **Pushing:** the dashboard never writes to the mobile-clock clone (a standing rule). "Unpushed commits" items show the branch and a **Copy push command** button plus **Open PR** (GitHub compare page); the user pushes in their terminal.
 - **Hero headline order** (first match wins): one of the user's builds failed after retries; a ticket was sent back by QA or got changes requested since the user last looked; QA is testing one of the user's tickets and a build is missing for a platform; a meeting starts within 15 minutes; a review is waiting on the user; in wrap-up, the Before You Log Off count; otherwise "Nothing's stuck." with the top My Work row as the button.
 - **Outside the shift:** before the shift starts, Home shows the Start view with "Shift starts in Xh" and the shift line empty; after it ends, the Wrap-up view until midnight, then Start. Saturdays and Sundays show the Mid view with no shift line. Shifts crossing midnight aren't supported (Settings rejects end before start).
-- **Build develop:** uses the existing default build keys (`builds.defaultChecked`) against `develop`, through the same confirm sheet as PR builds.
 - **Calendar scope:** all calendars in the Calendar app, skipping all-day, declined, and canceled events.
 - **Standup detection:** a meeting whose title contains "standup" or "stand-up" (any case). Without one, no Standup card shows.
 

@@ -139,3 +139,11 @@ test('userSearch queries by name', async () => {
   assert.equal(users[0].emailAddress, 'hashfaq@tcpsoftware.com');
   assert.equal(r.calls[0].url, 'https://x.atlassian.net/rest/api/3/user/search?query=Hamza%20Ashfaq&maxResults=10');
 });
+
+test('userByEmail finds the first matching account, or null', async () => {
+  const r = recorder([json([{ accountId: 'acc-1', displayName: 'Sana' }]), json([])]);
+  const j = createJira({ ...cfg, fetch: r.fetch });
+  assert.equal(await j.userByEmail('s@x.co'), 'acc-1');
+  assert.equal(r.calls[0].url, 'https://x.atlassian.net/rest/api/3/user/search?query=s%40x.co');
+  assert.equal(await j.userByEmail('nobody@x.co'), null);
+});
