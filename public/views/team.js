@@ -1,23 +1,24 @@
-import { api, el, ext, sep, ticketChip, glyph, avatar, skeleton, empty } from '../ui.js';
+import { api, el, ext, sep, ticketChip, glyph, avatar, skeleton, empty, freshness } from '../ui.js';
 
 const REFRESH_MS = 120000;
 let root;
 let queue = null;
 let queueError = null;
 let loadedAt = 0;
+let fetchedAt = 0; // last successful load, for the freshness label
 let shared = { prs: [], prsLoaded: false };
 
 async function load(force = false) {
   if (!force && Date.now() - loadedAt < REFRESH_MS) return;
   loadedAt = Date.now();
-  try { queue = await api('/api/reviews'); queueError = null; } catch (err) { queueError = err; }
+  try { queue = await api('/api/reviews'); queueError = null; fetchedAt = Date.now(); } catch (err) { queueError = err; }
   render();
 }
 
 const waitText = (days) => (days === 0 ? 'today' : `${days} day${days === 1 ? '' : 's'}`);
 
 function reviewerRows() {
-  if (queueError) return [el('li', {}, el('div', { class: 'banner error' }, queueError.message))];
+  if (queueError && !queue) return [el('li', {}, el('div', { class: 'banner error' }, queueError.message))];
   if (!queue) return skeleton(4);
   if (!queue.byReviewer.length) return [empty('check', 'Review queue is empty', 'Nobody has pending review requests.')];
   const max = Math.max(...queue.byReviewer.map((r) => r.count));
@@ -98,7 +99,8 @@ function render() {
   root.replaceChildren(
     el('div', { class: 'page-head' }, el('div', {},
       el('div', { class: 'page-title' }, 'Team'),
-      el('div', { class: 'page-sub' }, 'Who\'s waiting on whom'))),
+      el('div', { class: 'page-sub' }, 'Who\'s waiting on whom'),
+      freshness({ at: fetchedAt, intervalMs: REFRESH_MS, error: queue ? queueError : null, onRefresh: () => load(true) }))),
     el('section', { class: 'block' },
       sectionHead(['team', 'orange'], 'Review Load', 'Pending review requests per person'),
       insetList(reviewerRows(), '64px')),

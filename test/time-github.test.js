@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { githubByDay } from '../lib/time/github.js';
 import { dayWeights, evidenceText } from '../lib/time/allocate.js';
 
+const keyKinds = (items) => items.map(({ key, kind }) => ({ key, kind }));
+
 // Fake gh: answers by the endpoint in the args, records every call.
 function fakeGh(routes) {
   const calls = [];
@@ -30,8 +32,8 @@ test('builds: my dispatched runs by local day, keyed by branch, one per run id',
     [/search\/issues$/, ''],
   ]);
   const { byDay } = await githubByDay(gh, { repo: 'o/r', login: 'me', ym: '2026-11' });
-  assert.deepEqual(byDay.get('2026-11-03'), [{ key: 'TCPMOB-1600', kind: 'build' }, { key: 'TCPMOB-1600', kind: 'build' }]);
-  assert.deepEqual(byDay.get('2026-11-04'), [{ key: 'TCPMOB-1609', kind: 'build' }]);
+  assert.deepEqual(keyKinds(byDay.get('2026-11-03')), [{ key: 'TCPMOB-1600', kind: 'build' }, { key: 'TCPMOB-1600', kind: 'build' }]);
+  assert.deepEqual(keyKinds(byDay.get('2026-11-04')), [{ key: 'TCPMOB-1609', kind: 'build' }]);
   const runs = gh.calls.find((a) => a.some((x) => /actions\/runs$/.test(x)));
   assert.ok(runs.includes('actor=me') && runs.includes('event=workflow_dispatch') && runs.includes('created=2026-11-01..2026-11-30'));
 });
@@ -46,8 +48,8 @@ test('reviews: my reviews on other people\'s PRs, keyed by the PR branch', async
     [/pulls\/8\/reviews$/, '2026-11-10T16:00:00Z'],
   ]);
   const { byDay } = await githubByDay(gh, { repo: 'o/r', login: 'me', ym: '2026-11' });
-  assert.deepEqual(byDay.get('2026-11-09'), [{ key: 'TCPMOB-1482', kind: 'review' }, { key: 'TCPMOB-1482', kind: 'review' }]);
-  assert.deepEqual(byDay.get('2026-11-10'), [{ key: 'TCPMOB-1500', kind: 'review' }]);
+  assert.deepEqual(keyKinds(byDay.get('2026-11-09')), [{ key: 'TCPMOB-1482', kind: 'review' }, { key: 'TCPMOB-1482', kind: 'review' }]);
+  assert.deepEqual(keyKinds(byDay.get('2026-11-10')), [{ key: 'TCPMOB-1500', kind: 'review' }]);
   assert.equal(byDay.has('2026-10-30'), false);
   const search = gh.calls.find((a) => a.some((x) => /search\/issues$/.test(x)));
   assert.ok(search.some((x) => x.includes('reviewed-by:me') && x.includes('-author:me') && x.includes('repo:o/r')));

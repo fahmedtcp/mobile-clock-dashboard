@@ -36,11 +36,12 @@ function matchingItems(text, options) {
   const words = query.split(/\s+/).filter(Boolean);
   const key = query.toUpperCase();
   const matchesAll = (it) => words.every((w) => `${it.title} ${it.hint ?? ''} ${it.group}`.toLowerCase().includes(w));
-  const ticketItem = {
-    group: 'Ticket', icon: 'search', title: `Which build has ${key}?`, run: () => options.lookup(key),
-  };
+  const ticketItems = [
+    { group: 'Ticket', icon: 'ticket', title: `Open ticket ${key}`, run: () => options.openTicket(key) },
+    { group: 'Ticket', icon: 'search', title: `Which build has ${key}?`, run: () => options.lookup(key) },
+  ];
   return [
-    ...(TICKET_KEY.test(key) ? [ticketItem] : []),
+    ...(TICKET_KEY.test(key) ? ticketItems : []),
     ...commandItems(options).filter(matchesAll),
   ].slice(0, 12);
 }
