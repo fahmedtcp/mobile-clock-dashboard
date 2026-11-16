@@ -63,3 +63,16 @@ test('releaseNotes groups and sorts', () => {
     'Mobile 46\n\nFixes\n- TCPMOB-2 C\n- TCPMOB-9 A\n\nImprovements\n- TCPMOB-10 B\n\nOther\n- TCPMOB-4 E\n');
   assert.equal(releaseNotes([], 'Mobile 46'), 'Mobile 46\n');
 });
+
+test('a Release Candidate ticket with no PR found counts as merged, not "No PR found"', async () => {
+  const { releaseLists } = await import('../lib/release.js');
+  const lists = releaseLists({
+    tickets: [
+      { key: 'TCPMOB-897', status: 'Release Candidate' },
+      { key: 'TCPMOB-900', status: 'In Progress' },
+    ],
+    prsByKey: new Map(), mergedSinceCut: [], onBranch: null, fixKeys: new Set(['TCPMOB-897', 'TCPMOB-900']),
+  });
+  assert.deepEqual(lists.notMerged.map((t) => t.key), ['TCPMOB-900']);
+  assert.equal(lists.inVersion.length, 2);
+});

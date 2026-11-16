@@ -90,3 +90,11 @@ test('unknown service is 404', async () => {
   assert.equal((await post('slack')).status, 404);
   server.close();
 });
+
+test('the GitHub check skips the 15-second reuse', async () => {
+  let cleared = 0;
+  const { server, post } = await boot({ gh: { run: async () => 'pat\n', json: async () => [], clearCache: () => { cleared++; } } });
+  await post('github');
+  assert.equal(cleared, 1);
+  server.close();
+});

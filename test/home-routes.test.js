@@ -209,3 +209,32 @@ test('at shift start, open to-dos lead the headline', async () => {
   assert.equal(headline.sub, 'Start with: Ask Hamza about spacing');
   server.close();
 });
+
+// ---------- faster loading ----------
+
+test('home starts Jira and GitHub together', async () => {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const jira = fakeJira();
+  const search = jira.search;
+  jira.search = async (...a) => { await wait(250); return search(...a); };
+  const slowGh = gh();
+  const json = slowGh.json;
+  slowGh.json = async (args) => { if (args.includes('pr') && args.includes('list')) await wait(250); return json(args); };
+  const { server, req } = await boot({ jira, ghOverride: slowGh });
+  const started = Date.now();
+  await req('GET', '/api/home?fresh=1');
+  const took = Date.now() - started;
+  assert.ok(took < 450, `took ${took} ms; sequential would be over 500`);
+  server.close();
+});
+
+test('fresh=1 clears the GitHub cache; a plain load does not', async () => {
+  let cleared = 0;
+  const spyGh = { ...gh(), clearCache: () => { cleared++; } };
+  const { server, req } = await boot({ ghOverride: spyGh });
+  await req('GET', '/api/home');
+  assert.equal(cleared, 0);
+  await req('GET', '/api/home?fresh=1');
+  assert.equal(cleared, 1);
+  server.close();
+});

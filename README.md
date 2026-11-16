@@ -143,6 +143,8 @@ Setup:
 
 Messages appear from Workflows, not your own account. Each PR can be sent at most once every 30 minutes.
 
+**GitHub speed:** common reads (PRs, runs, compares, branches, your login) go straight to GitHub's API using the token your signed-in `gh` already has. It's read once with `gh auth token`, kept in memory, and never saved or logged. Actions you click (create PR, builds, rerun, cancel, update branch) still run `gh`. Identical reads at the same moment share one call and are reused for 15 seconds; Refresh and any action clear that. If `HTTPS_PROXY` (or a similar proxy variable) is set, or GitHub can't be reached directly, the dashboard uses `gh` for everything.
+
 ## Actions That Change Things
 
 Each one asks for confirmation first and is checked again on the server.
