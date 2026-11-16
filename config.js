@@ -7,7 +7,7 @@ export const ROOT = path.dirname(fileURLToPath(import.meta.url));
 // Tests never read the real .env, so they can never reach real Teams, Jira, or GitHub settings.
 if (!process.env.NODE_TEST_CONTEXT) loadEnv(path.join(ROOT, '.env'));
 
-export const REPO = 'tcp-software/mobile-clock';
+export { REPO } from './public/shared.js';
 export const PORT = 4317;
 export const HOST = '127.0.0.1';
 
