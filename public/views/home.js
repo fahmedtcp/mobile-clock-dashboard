@@ -890,7 +890,7 @@ function behindNote(pr) {
 }
 
 function prActions(pr) {
-  const canQa = pr.ticket?.status === 'Dev Review';
+  const canQa = pr.ticket?.status === 'Dev Review' && pr.approved; // QA waits for GitHub's Approved, like Build
   return el('div', { class: 'row-actions' },
     canQa && smallButton(() => sendToQa(pr), 'Send to QA'),
     canQa && smallButton(() => requestQa(pr), icon('team'), 'Request QA Review'),

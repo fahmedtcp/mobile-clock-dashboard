@@ -96,3 +96,23 @@ export function labelRows(spans) {
   }
   return rows;
 }
+
+// ---------- links in plain text ----------
+
+export const REPO = 'tcp-software/mobile-clock';
+export const prUrl = (n) => `https://github.com/${REPO}/pull/${n}`;
+
+// Ticket keys and standalone "#123" PR numbers in text → tokens the page turns into links (textContent only).
+const LINKABLE = /\b(TCPMOB-\d+)\b|(?<![\w/#])#(\d{1,6})\b/gi;
+export function linkTokens(text) {
+  const out = [];
+  const str = String(text ?? '');
+  let last = 0;
+  for (const m of str.matchAll(LINKABLE)) {
+    if (m.index > last) out.push({ t: 'text', v: str.slice(last, m.index) });
+    out.push(m[1] ? { t: 'ticket', v: m[1].toUpperCase() } : { t: 'pr', v: `#${m[2]}`, n: Number(m[2]) });
+    last = m.index + m[0].length;
+  }
+  if (last < str.length) out.push({ t: 'text', v: str.slice(last) });
+  return out;
+}

@@ -193,3 +193,11 @@ test('a malformed key escape is a 400, not a 500', async () => {
   assert.equal(res.status, 400);
   server.close();
 });
+
+test('panel offers QA only once a PR for the ticket is approved', async () => {
+  const unapproved = [{ number: 1101, title: 'TCPMOB-1 CSSO guards', url: 'u1101', state: 'OPEN', reviewDecision: 'REVIEW_REQUIRED', headRefName: 'TCPMOB-1-x' }];
+  const gh = { json: async (args) => (args.includes('pr') ? unapproved : []), run: async () => '' };
+  const { server, req } = await bootWith({ gh, peek: () => null });
+  assert.equal((await req('GET', '/api/tickets/TCPMOB-1/panel')).json().canSendToQa, false);
+  server.close();
+});

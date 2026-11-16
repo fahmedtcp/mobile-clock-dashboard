@@ -49,3 +49,17 @@ test('labelRows puts touching labels on the next free row', async () => {
   assert.deepEqual(labelRows([[0, 100], [103, 200]]), [0, 1], 'closer than 6px counts as touching');
   assert.deepEqual(labelRows([]), []);
 });
+
+test('linkTokens finds ticket keys and PR numbers in plain text', async () => {
+  const { linkTokens, prUrl } = await import('../public/shared.js');
+  assert.deepEqual(linkTokens('Hamza approved #749 for TCPMOB-897.'), [
+    { t: 'text', v: 'Hamza approved ' }, { t: 'pr', v: '#749', n: 749 }, { t: 'text', v: ' for ' },
+    { t: 'ticket', v: 'TCPMOB-897' }, { t: 'text', v: '.' },
+  ]);
+  assert.deepEqual(linkTokens('tcpmob-12 and (#1099)'), [
+    { t: 'ticket', v: 'TCPMOB-12' }, { t: 'text', v: ' and (' }, { t: 'pr', v: '#1099', n: 1099 }, { t: 'text', v: ')' },
+  ]);
+  assert.deepEqual(linkTokens('a#12 x#9 and http://x/#123'), [{ t: 'text', v: 'a#12 x#9 and http://x/#123' }], 'only a standalone #number');
+  assert.deepEqual(linkTokens(''), []);
+  assert.equal(prUrl(749), 'https://github.com/tcp-software/mobile-clock/pull/749');
+});

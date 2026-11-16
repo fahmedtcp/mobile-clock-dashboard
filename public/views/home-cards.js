@@ -1,10 +1,14 @@
 // Card builders for the shift-aware Home. Each takes data from /api/home plus `act(action)` and returns a node (or null).
 // All text goes through el() → textContent, so Jira and calendar text can never become markup.
-import { el, glyph, freshness } from '../ui.js';
+import { el, ext, glyph, freshness } from '../ui.js';
 import { ticketLink } from '../tickets-ui.js';
-import { shiftState, labelRows } from '../shared.js';
+import { shiftState, labelRows, linkTokens, prUrl } from '../shared.js';
 
 const STAGE_COUNT = 5;
+
+// Plain text with every ticket key and "#123" turned into a link: keys open the ticket panel, PRs open GitHub.
+export const linked = (text) => linkTokens(text).map((tok) => (tok.t === 'ticket' ? ticketLink(tok.v)
+  : tok.t === 'pr' ? ext(prUrl(tok.n), tok.v) : tok.v));
 const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const pctOfShift = (shift, iso) => {
   const start = Date.parse(shift.shiftStart);
@@ -119,15 +123,15 @@ export function heroCard(home, act) {
     home.team.map((m) => el('div', { class: 'mate' },
       el('span', { class: `av ${m.onShift ? 'on' : ''}`, 'aria-hidden': 'true' }, m.you ? 'You' : initials(m.name)),
       el('span', { class: 'who' }, m.name, m.qa ? el('span', { class: 'qa' }, ' · QA') : null),
-      el('span', { class: 'doing' }, m.doing)))) : null;
+      el('span', { class: 'doing' }, linked(m.doing))))) : null;
   return el('section', { class: `hero-card ${team ? '' : 'solo'}`, 'aria-label': 'Your shift' },
     el('div', {},
       el('div', { class: 'hello' }, [date, clock(home.now), meetingNote].filter(Boolean).join(' · '),
         ' ', freshness({ at: home.generatedAt, intervalMs: 60000 })),
       ...[home.errors.github && `GitHub didn't load, so pull request details are missing: ${home.errors.github}`, home.errors.calendar]
         .filter(Boolean).map((text) => el('p', { class: 'hero-warn', role: 'status' }, text)),
-      el('h2', { class: 'headline' }, headline.text),
-      headline.sub && el('p', { class: 'subline' }, headline.sub),
+      el('h2', { class: 'headline' }, linked(headline.text)),
+      headline.sub && el('p', { class: 'subline' }, linked(headline.sub)),
       (headline.action || headline.secondary) && el('div', { class: 'hero-actions' },
         actionButton(headline.action, act, { filled: true }), actionButton(headline.secondary, act))),
     team,
@@ -152,14 +156,14 @@ export function workCard(rows, act, error) {
   const body = rows.length
     ? rows.map((row) => el('div', {
       class: 'tk', role: 'button', tabindex: '0', 'aria-label': `${row.key}: ${row.blocker.text}`,
-      onclick: (e) => { if (!e.target.closest('button')) act({ kind: 'open-ticket', key: row.key }); },
+      onclick: (e) => { if (!e.target.closest('button, a')) act({ kind: 'open-ticket', key: row.key }); }, // links inside the row do their own thing
       onkeydown: (e) => { if (e.key === 'Enter' && e.target === e.currentTarget) act({ kind: 'open-ticket', key: row.key }); },
     },
     el('div', { class: 'tk-id' }, ticketLink(row.key), el('span', { class: 'sum' }, row.summary)),
     stageDots(row),
-    el('div', { class: 'block' }, el('b', {}, row.blocker.text), row.blocker.quote && el('span', { class: 'muted' }, ` “${row.blocker.quote}”`),
-      row.blocker.detail && el('span', { class: 'muted' }, ` ${row.blocker.detail}`),
-      ...(row.todos ?? []).map((t) => el('div', { class: 'pin' }, el('span', { class: 'pin-dot', 'aria-hidden': 'true' }), t.text,
+    el('div', { class: 'block' }, el('b', {}, linked(row.blocker.text)), row.blocker.quote && el('span', { class: 'muted' }, ' “', linked(row.blocker.quote), '”'),
+      row.blocker.detail && el('span', { class: 'muted' }, ' ', linked(row.blocker.detail)),
+      ...(row.todos ?? []).map((t) => el('div', { class: 'pin' }, el('span', { class: 'pin-dot', 'aria-hidden': 'true' }), linked(t.text),
         t.from ? el('span', { class: 'faint' }, ` · from ${t.from}`) : null))),
     el('div', { class: 'acts' }, actionButton(row.secondary, act),
       actionButton(row.action, act, { filled: true }))))
@@ -174,7 +178,7 @@ export function feedCard(items, { id, title, onMarkRead, emptyText }) {
   const body = items.length ? items.map((item) => el('div', { class: `item ${item.unread ? 'unread' : ''}` },
     el('span', { class: 'dot', 'aria-hidden': 'true' }),
     el('span', { class: 'av', 'aria-hidden': 'true' }, initials(item.who)),
-    el('div', { class: 'body' }, el('b', {}, item.who), ` ${item.text}`, item.quote && el('div', { class: 'quote' }, item.quote)),
+    el('div', { class: 'body' }, el('b', {}, item.who), ' ', linked(item.text), item.quote && el('div', { class: 'quote' }, linked(item.quote))),
     el('span', { class: 'when' }, clock(item.at))))
     : [el('p', { class: 'muted hc-empty' }, emptyText)];
   const trail = onMarkRead && unread ? el('button', { type: 'button', class: 'link-btn', onclick: onMarkRead }, 'Mark read') : null;
@@ -186,7 +190,7 @@ export function feedCard(items, { id, title, onMarkRead, emptyText }) {
 export function waitingCard(waiting, act) {
   const rows = [
     ...waiting.reviews.map((r) => el('div', { class: 'rowx' },
-      el('div', { class: 't' }, el('b', {}, `Review #${r.pr} for ${r.author}`), el('div', { class: 's' }, r.title)),
+      el('div', { class: 't' }, el('b', {}, 'Review ', ext(r.url, `#${r.pr}`), ` for ${r.author}`), el('div', { class: 's' }, linked(r.title))),
       actionButton({ kind: 'open-url', label: 'Open', url: r.url }, act))),
     waiting.hoursPending > 0 && el('div', { class: 'rowx' },
       el('div', { class: 't' }, el('b', {}, `Confirm ${waiting.hoursPending} ${waiting.hoursPending === 1 ? 'day' : 'days'} of hours`),
@@ -219,7 +223,7 @@ export function planCard(plan, act) {
   if (!plan.length) return null;
   return card('plan', 'Plan for This Shift', ['bolt', 'teal'], {},
     el('ol', { class: 'plan' }, plan.map((p) => el('li', { class: 'rowx' },
-      el('div', { class: 't' }, el('b', {}, p.key), el('div', { class: 's' }, p.text)), actionButton(p.action, act)))));
+      el('div', { class: 't' }, el('b', {}, ticketLink(p.key)), el('div', { class: 's' }, linked(p.text))), actionButton(p.action, act)))));
 }
 
 export function standupCard(standup, act) {
@@ -228,9 +232,9 @@ export function standupCard(standup, act) {
   return card('standup', `Standup at ${clock(standup.at)}`, ['team', 'green'], {
     trail: el('button', { type: 'button', class: 'link-btn', onclick: () => act({ kind: 'copy', text, done: 'Standup copied.' }) }, 'Copy'),
   }, el('div', { class: 'note' },
-    el('b', {}, 'Yesterday'), el('p', {}, standup.yesterday),
-    el('b', {}, 'Today'), el('p', {}, standup.today),
-    el('b', {}, 'Blocked'), el('p', {}, standup.blocked)),
+    el('b', {}, 'Yesterday'), el('p', {}, linked(standup.yesterday)),
+    el('b', {}, 'Today'), el('p', {}, linked(standup.today)),
+    el('b', {}, 'Blocked'), el('p', {}, linked(standup.blocked))),
   el('p', { class: 'foot' }, 'From your Jira changes, commits, PRs, and builds. Never chat text.'));
 }
 
@@ -240,7 +244,7 @@ export function wrapCard(items, act) {
   return card('wrap', 'Before You Log Off', ['moon', 'indigo'], { count: left || null, hot: left > 0 },
     ...items.map((item) => el('div', { class: `check ${item.done ? 'ok' : ''}` },
       el('span', { class: `box ${item.done ? 'ok' : 'todo'}`, 'aria-hidden': 'true' }, item.done ? '✓' : ''),
-      el('div', { class: 't' }, el('b', {}, item.title), el('div', { class: 's' }, item.sub)),
+      el('div', { class: 't' }, el('b', {}, linked(item.title)), el('div', { class: 's' }, linked(item.sub))),
       !item.done && actionButton(item.action, act))));
 }
 
@@ -251,9 +255,8 @@ function todoItem(todo, handlers) {
       type: 'button', class: `box ${todo.done ? 'ok' : 'empty'}`, role: 'checkbox', 'aria-checked': String(todo.done),
       'aria-label': `${todo.done ? 'Uncheck' : 'Check off'}: ${todo.text}`, onclick: () => handlers.toggle(todo),
     }, todo.done ? '✓' : ''),
-    el('div', { class: 't' }, el('span', {}, todo.text),
+    el('div', { class: 't' }, el('span', {}, linked(todo.text)),
       todo.key && !todo.text.toUpperCase().includes(todo.key) && [' ', ticketLink(todo.key)],
-      todo.key && todo.text.toUpperCase().includes(todo.key) && [' ', ticketLink(todo.key, '↗')],
       todo.from && el('span', { class: 'from' }, `from ${todo.from}`)),
     el('button', { type: 'button', class: 'todo-x', 'aria-label': `Delete: ${todo.text}`, onclick: () => handlers.remove(todo) }, '×'));
 }
