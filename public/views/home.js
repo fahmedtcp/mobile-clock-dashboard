@@ -1178,7 +1178,7 @@ export default {
     $('builds').style.setProperty('--inset', '56px');
     $('builds-section').hidden = true;
     render();
-    loadSlow(true);
+    loadSlow(); // the server's 30-second copy; Refresh and pull-to-refresh force a rebuild
     setInterval(tickShift, SHIFT_TICK_MS);
   },
   async refresh() { ctx.refresh(); await loadSlow(true); },
