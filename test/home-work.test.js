@@ -39,7 +39,8 @@ test('one blocker per ticket by priority', () => {
   assert.equal(row.blocker.quote, 'still shows on empty filter');
   assert.equal(row.tone, 'bad');
   assert.equal(row.stageLabel, 'Back from QA');
-  assert.deepEqual(row.action, { kind: 'open-url', label: 'Open PR', url: 'pr' });
+  assert.deepEqual(row.action, { kind: 'request-pr-review', label: 'Request PR Review', key: KEY });
+  assert.deepEqual(row.secondary, { kind: 'open-url', label: 'Open PR', url: 'pr' });
 });
 
 test('my own status change back to In Progress is not a bounce', () => {
@@ -55,9 +56,9 @@ test('a bounce older than 3 days is not shown as a bounce', () => {
 test('failed checks name the checks and offer Update branch when behind', () => {
   const row = one({ prs: [pr({ checks: 'failure', failedChecks: ['eslint', 'unit'] })], behind: { 1101: 9 } });
   assert.equal(row.blocker.text, 'Checks failed · eslint, unit · 9 behind develop');
-  assert.deepEqual(row.action, { kind: 'update-branch', label: 'Update branch', pr: 1101 });
+  assert.deepEqual(row.secondary, { kind: 'update-branch', label: 'Update branch', pr: 1101 });
   const notBehind = one({ prs: [pr({ checks: 'failure', failedChecks: ['eslint'] })] });
-  assert.deepEqual(notBehind.action, { kind: 'open-url', label: 'Open checks', url: 'pr/checks' });
+  assert.deepEqual(notBehind.secondary, { kind: 'open-url', label: 'Open checks', url: 'pr/checks' });
 });
 
 test('changes requested quotes the reviewer by name', () => {
@@ -102,10 +103,12 @@ test('merged with no build since offers Open ticket', () => {
 test('approved Dev Review with a build is ready for QA', () => {
   const row = one({ tickets: [ticket({ status: 'Dev Review' })], prs: [pr({ approved: true })], builds: { [KEY]: [build('412', 'Android')] } });
   assert.equal(row.blocker.text, 'Approved with build 412. Ready for QA.');
-  assert.deepEqual(row.action, { kind: 'request-qa', label: 'Request QA', key: KEY });
+  assert.deepEqual(row.action, { kind: 'build', label: 'Build', pr: 1101, keys: null });
+  assert.deepEqual(row.secondary, { kind: 'send-to-qa', label: 'Send to QA', key: KEY });
   const noBuild = one({ tickets: [ticket({ status: 'Dev Review' })], prs: [pr({ approved: true })] });
   assert.equal(noBuild.blocker.text, 'Approved. No build yet.');
   assert.deepEqual(noBuild.action, { kind: 'build', label: 'Build', pr: 1101, keys: null });
+  assert.deepEqual(noBuild.secondary, { kind: 'send-to-qa', label: 'Send to QA', key: KEY });
 });
 
 test('review states: waiting on a reviewer, or no reviewer yet', () => {
@@ -144,5 +147,27 @@ test('a bounce clears once the ticket is back in QA', () => {
 test('an approved PR on a ticket still In Progress says to move it to Dev Review', () => {
   const row = one({ prs: [pr({ approved: true, reviewRequestedLogins: [] })], builds: { [KEY]: [build('412', 'Android')] } });
   assert.equal(row.blocker.text, 'Approved. Move it to Dev Review.');
-  assert.deepEqual(row.action, { kind: 'open-ticket', label: 'Open ticket', key: KEY });
+  assert.deepEqual(row.action, { kind: 'request-pr-review', label: 'Request PR Review', key: KEY }, 'it moves the ticket to Dev Review');
+});
+
+test('Dev Review without an approval offers neither Build nor Send to QA', () => {
+  const row = one({ tickets: [ticket({ status: 'Dev Review' })], prs: [pr()] });
+  const kinds = [row.action?.kind, row.secondary?.kind];
+  assert.ok(!kinds.includes('build') && !kinds.includes('send-to-qa'), kinds.join(','));
+  assert.deepEqual(row.action, { kind: 'open-url', label: 'Open PR', url: 'pr' }, 'waiting on a review: open the PR');
+});
+
+test('In Progress always leads with Request PR Review, with or without a PR', () => {
+  assert.deepEqual(one({}).action, { kind: 'request-pr-review', label: 'Request PR Review', key: KEY });
+  assert.equal(one({}).secondary, null, 'Open ticket is not repeated as a second button');
+  assert.equal(one({ prs: [pr()] }).action.kind, 'request-pr-review');
+});
+
+test('QA testing one platform offers Build only when the PR is approved', () => {
+  const qa = (approved) => one({
+    tickets: [ticket({ status: 'QA Review', assignee: { accountId: 'sana', name: 'Sana Ali' } })],
+    prs: [pr({ approved })], builds: { [KEY]: [build('412', 'Android')] },
+  });
+  assert.equal(qa(true).action.kind, 'build');
+  assert.notEqual(qa(false).action?.kind, 'build');
 });

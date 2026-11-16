@@ -158,8 +158,11 @@ export function workCard(rows, act, error) {
     el('div', { class: 'tk-id' }, ticketLink(row.key), el('span', { class: 'sum' }, row.summary)),
     stageDots(row),
     el('div', { class: 'block' }, el('b', {}, row.blocker.text), row.blocker.quote && el('span', { class: 'muted' }, ` “${row.blocker.quote}”`),
-      row.blocker.detail && el('span', { class: 'muted' }, ` ${row.blocker.detail}`)),
-    el('div', { class: 'acts' }, actionButton(row.action, act, { filled: row.tone === 'bad' || row.blocker.kind === 'qa-missing-platform' }))))
+      row.blocker.detail && el('span', { class: 'muted' }, ` ${row.blocker.detail}`),
+      ...(row.todos ?? []).map((t) => el('div', { class: 'pin' }, el('span', { class: 'pin-dot', 'aria-hidden': 'true' }), t.text,
+        t.from ? el('span', { class: 'faint' }, ` · from ${t.from}`) : null))),
+    el('div', { class: 'acts' }, actionButton(row.secondary, act),
+      actionButton(row.action, act, { filled: true }))))
     : [el('p', { class: 'muted hc-empty' }, error ? `Couldn't load your tickets: ${error}` : 'No tickets assigned to you right now.')];
   return card('work', 'My Work', ['ticket', 'purple'], { count: rows.length, trail: 'Click a ticket for its panel' }, ...body);
 }
@@ -241,13 +244,34 @@ export function wrapCard(items, act) {
       !item.done && actionButton(item.action, act))));
 }
 
-export function noteCard(note, { editable, onSave }) {
-  if (!editable && !note) return null;
-  const body = editable
-    ? el('textarea', {
-      class: 'field note-edit', rows: '4', maxlength: '1000', placeholder: 'Start with… Waiting on… Left off…', 'aria-label': 'Note for tomorrow',
-      onchange: (e) => onSave(e.target.value),
-    }, note?.text ?? '')
-    : el('p', { class: 'note-text' }, note.text);
-  return card('note', 'Note for Tomorrow', ['check', 'green'], { trail: editable ? 'Shows at the start of your next shift' : null }, body);
+// To-dos: open ones first (oldest first), then today's checked ones. Typing TCPMOB-123 or "123 …" links a ticket.
+function todoItem(todo, handlers) {
+  return el('div', { class: `todo ${todo.done ? 'ok' : ''}` },
+    el('button', {
+      type: 'button', class: `box ${todo.done ? 'ok' : 'empty'}`, role: 'checkbox', 'aria-checked': String(todo.done),
+      'aria-label': `${todo.done ? 'Uncheck' : 'Check off'}: ${todo.text}`, onclick: () => handlers.toggle(todo),
+    }, todo.done ? '✓' : ''),
+    el('div', { class: 't' }, el('span', {}, todo.text),
+      todo.key && !todo.text.toUpperCase().includes(todo.key) && [' ', ticketLink(todo.key)],
+      todo.key && todo.text.toUpperCase().includes(todo.key) && [' ', ticketLink(todo.key, '↗')],
+      todo.from && el('span', { class: 'from' }, `from ${todo.from}`)),
+    el('button', { type: 'button', class: 'todo-x', 'aria-label': `Delete: ${todo.text}`, onclick: () => handlers.remove(todo) }, '×'));
+}
+
+export function todoCard(todos, { title, trail = null, alwaysShow = false, handlers }) {
+  const open = todos.filter((t) => !t.done).length;
+  if (!todos.length && !alwaysShow) return null;
+  const input = el('input', {
+    class: 'field todo-input', type: 'text', maxlength: '200', autocomplete: 'off', spellcheck: 'true',
+    placeholder: 'Add a to-do…', title: 'A ticket key like TCPMOB-123, or a number first, links the ticket', 'aria-label': 'New to-do',
+    onkeydown: (e) => {
+      if (e.key !== 'Enter' || !e.target.value.trim()) return;
+      const text = e.target.value;
+      e.target.value = ''; // empty first, so the redraw that shows the new to-do isn't skipped
+      handlers.add(text);
+    },
+  });
+  return card('todos', title, ['check', open ? 'orange' : 'green'], { count: open || null, hot: false, trail },
+    ...todos.map((t) => todoItem(t, handlers)),
+    el('div', { class: 'todo-add' }, input, el('kbd', {}, 'Return')));
 }

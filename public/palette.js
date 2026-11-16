@@ -40,7 +40,11 @@ function matchingItems(text, options) {
     { group: 'Ticket', icon: 'ticket', title: `Open ticket ${key}`, run: () => options.openTicket(key) },
     { group: 'Ticket', icon: 'search', title: `Which build has ${key}?`, run: () => options.lookup(key) },
   ];
+  const todoText = text.trim().match(/^todo\s+(.+)$/i)?.[1];
+  const todoItems = todoText && options.addTodo
+    ? [{ group: 'To-Do', icon: 'check', title: `Add to-do: ${todoText}`, run: () => options.addTodo(todoText) }] : [];
   return [
+    ...todoItems,
     ...(TICKET_KEY.test(key) ? ticketItems : []),
     ...commandItems(options).filter(matchesAll),
   ].slice(0, 12);

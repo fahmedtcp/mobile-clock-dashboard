@@ -1,13 +1,14 @@
 import {
-  $, api, post, put, el, ext, ago, duration, statusOf, statusChip, ticketChip, placeholder, sep, showError, confirmSheet,
+  $, api, post, el, ext, ago, duration, statusOf, statusChip, ticketChip, placeholder, sep, showError, confirmSheet,
   toast, section, icon, glyph, avatar, skeleton, empty, sectionFreshness,
 } from '../ui.js';
 import { registerTicketActions, buildChip, loadLatestBuilds, openTicketPanel } from '../tickets-ui.js';
 import {
-  heroCard, shiftLine, nowOf, workCard, feedCard, waitingCard, todayCard, planCard, standupCard, wrapCard, noteCard,
+  heroCard, shiftLine, nowOf, workCard, feedCard, waitingCard, todayCard, planCard, standupCard, wrapCard, todoCard,
 } from './home-cards.js';
 import { submitState, behindStale } from '../notify.js';
 import { branchName, TICKET_KEY, shiftState } from '../shared.js';
+import { parseMarkdown, botHeader } from '../markdown.js';
 
 let ctx;
 const local = {
@@ -62,6 +63,12 @@ function act(action) {
   switch (action.kind) {
     case 'open-url': window.open(action.url, '_blank', 'noopener'); break;
     case 'open-ticket': openTicketPanel(action.key); break;
+    case 'request-pr-review': requestPrReview(action.key); break;
+    case 'send-to-qa': {
+      const row = local.home?.work.find((r) => r.key === action.key);
+      sendToQa({ ticket: { key: action.key, summary: row?.summary ?? '', status: 'Dev Review' } });
+      break;
+    }
     case 'request-qa': {
       const row = local.home?.work.find((r) => r.key === action.key);
       requestQa({ ticket: { key: action.key, summary: row?.summary ?? '', status: 'Dev Review' } });
@@ -101,12 +108,24 @@ async function markSeen() {
   render();
 }
 
-function saveNote(text) {
-  put('/api/home/note', { text }).then(({ note }) => {
-    if (local.home) local.home.note = note;
-    toast('Note saved', 'ok');
-  }, (err) => toast(err.message, 'bad'));
+// To-dos change on the server, then Home reloads; the add box keeps focus for the next one.
+async function changeTodos(request, { refocus = false } = {}) {
+  try {
+    await request();
+    local.refocusTodo = refocus;
+    await loadHome(true);
+    render();
+  } catch (err) {
+    toast(err.message, 'bad');
+  }
 }
+const todoHandlers = {
+  add: (text) => changeTodos(() => post('/api/home/todos', { text }), { refocus: true }),
+  toggle: (todo) => changeTodos(() => api(`/api/home/todos/${todo.id}`, { method: 'PATCH', body: JSON.stringify({ done: !todo.done }) })),
+  remove: (todo) => changeTodos(() => api(`/api/home/todos/${todo.id}`, { method: 'DELETE' })),
+};
+// ⌘K "todo …" adds from anywhere.
+window.addEventListener('home:todos-changed', () => loadSlow(true));
 
 // Every 30 s: move the shift line; when the moment changes (start → mid → wrap), reload the cards.
 function tickShift() {
@@ -118,8 +137,8 @@ function tickShift() {
 }
 
 function renderHome() {
-  // Never rebuild the cards under someone typing their note; it saves on blur and the next render catches up.
-  if (document.activeElement?.classList.contains('note-edit')) return;
+  // Never rebuild the cards under someone typing a to-do; the next render catches up.
+  if (document.activeElement?.classList.contains('todo-input') && document.activeElement.value) return;
   const root = $('home-cards');
   const { home } = local;
   if (!home) {
@@ -133,7 +152,7 @@ function renderHome() {
   const sinceShift = home.feed.filter((item) => Date.parse(item.at) > since);
   const cards = [heroCard(home, act)];
   if (moment === 'start') {
-    cards.push(noteCard(home.note, { editable: false }),
+    cards.push(todoCard(home.todos, { title: 'From Last Night', handlers: todoHandlers }),
       el('div', { class: 'hc-grid' },
         feedCard(sinceShift, { id: 'feed', title: 'Since Last Shift', emptyText: 'Nothing changed since your last shift.' }),
         home.calendar === 'ok' ? todayCard(home.shift, home.meetings) : null),
@@ -144,14 +163,16 @@ function renderHome() {
     cards.push(el('div', { class: 'hc-grid' },
       feedCard(home.feed, { id: 'feed', title: 'Since You Last Looked', onMarkRead: markSeen, emptyText: 'Nothing new on your tickets or PRs.' }),
       standupCard(home.standup, act)),
-    waitingCard(home.waiting, act));
+    waitingCard(home.waiting, act),
+    home.todos.some((t) => !t.done) ? todoCard(home.todos, { title: 'To-Dos', handlers: todoHandlers }) : null);
   }
   if (moment === 'wrap') {
     cards.push(el('div', { class: 'hc-grid' },
       wrapCard(home.wrap, act),
-      noteCard(home.note, { editable: true, onSave: saveNote })));
+      todoCard(home.todos, { title: 'For Tomorrow', trail: 'Reminds you at shift start', alwaysShow: true, handlers: todoHandlers })));
   }
   root.replaceChildren(...cards.filter(Boolean));
+  if (local.refocusTodo) { local.refocusTodo = false; root.querySelector('.todo-input')?.focus(); }
   ctx.setBadge('home', home.work.filter((r) => r.tone === 'bad').length);
   if (moment === 'mid' && home.feed.some((i) => i.unread)) {
     clearTimeout(local.seenTimer);
@@ -457,6 +478,38 @@ const teamsSetupSteps = () => [
 ];
 
 // The note, mention checkboxes, and a preview that repaints as either changes.
+// "+ Add person": mention someone just for this message by GitHub login. Nothing is saved.
+const ADD_MAX = 5;
+function addPersonRow(info, people, added) {
+  const input = el('input', {
+    class: 'field', type: 'text', placeholder: 'GitHub login, like abdulqadir-tcp', autocomplete: 'off', spellcheck: 'false',
+    'aria-label': 'Add a person by GitHub login',
+  });
+  const status = el('span', { class: 'footnote add-person-status', role: 'status' });
+  const add = async () => {
+    const login = input.value.trim().replace(/^@/, '');
+    if (!login) return;
+    if (info.people.some((p) => p.login.toLowerCase() === login.toLowerCase())) { status.textContent = `${login} is already in the list.`; return; }
+    if (added.size >= ADD_MAX) { status.textContent = `Up to ${ADD_MAX} extra people per message.`; return; }
+    status.textContent = 'Looking up…';
+    try {
+      const person = await api(`/api/people/${encodeURIComponent(login)}`);
+      info.people.push({ ...person, selected: true });
+      added.add(person.login);
+      people.append(mentionCheckboxes([{ ...person, selected: true }]).querySelector('label'));
+      people.dispatchEvent(new Event('change', { bubbles: true }));
+      status.textContent = person.email ? `Added ${person.name}.` : `Added ${person.name} as a plain name (no email found).`;
+      input.value = '';
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  };
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } }); // never sends the sheet
+  return el('div', { class: 'add-person' },
+    el('div', { class: 'add-person-row' }, input, el('button', { type: 'button', class: 'btn btn-small', onclick: add }, '+ Add Person')),
+    status);
+}
+
 function reviewMessageForm(info) {
   const note = el('textarea', {
     class: 'field', rows: 2, maxlength: 500, placeholder: 'Optional note, for example "Small one, mostly tests"',
@@ -481,12 +534,13 @@ async function requestReview(pr) {
   let sentTest = false;
   const test = testSwitch(info, 'Test chat not set up (TEAMS_TEST_WEBHOOK_URL)');
   const { note, people, chosen, preview } = reviewMessageForm(info);
+  const added = new Set();
   const ok = await confirmSheet({
     title: 'Request Review on Teams',
     body: info.configured
       ? [
           preview,
-          el('div', {}, el('p', { class: 'list-label', 'aria-hidden': 'true' }, 'Mention'), people),
+          el('div', {}, el('p', { class: 'list-label', 'aria-hidden': 'true' }, 'Mention'), people, addPersonRow(info, people, added)),
           el('label', { class: 'field-label' }, 'Note', note),
           test.row,
           el('p', { class: 'footnote' }, cooling
@@ -500,7 +554,7 @@ async function requestReview(pr) {
     onConfirm: async () => {
       sentTest = test.box.checked;
       await post(`/api/prs/${pr.number}/review-request`, {
-        logins: chosen().map((p) => p.login), note: note.value, test: sentTest,
+        logins: chosen().map((p) => p.login), note: note.value, test: sentTest, added: [...added],
       });
     },
   });
@@ -508,6 +562,103 @@ async function requestReview(pr) {
   toast(sentTest
     ? 'Sent to your test chat. Open Request Review again and turn off the test switch to send to the team.'
     : `Review requested for #${pr.number}`);
+}
+
+// ---------- Request PR Review: create the PR if needed, move the ticket to Dev Review, then ask on Teams ----------
+
+const PLACEHOLDER = /\[fill in[^\]]*\]/i;
+
+function reviewerBoxes(reviewers) {
+  return el('fieldset', { class: 'choice-list' }, el('legend', { class: 'sr-only' }, 'Reviewers'),
+    reviewers.length ? reviewers.map((r) => el('label', { class: 'choice' },
+      el('input', { type: 'checkbox', value: r.login, checked: r.selected }),
+      el('span', { class: 'choice-label' }, r.name),
+      el('span', { class: 'choice-platform' }, r.login)))
+      : el('p', { class: 'muted' }, 'Add teammates in Settings → Shift and Team to pick reviewers here.'));
+}
+
+// Write and Preview tabs over one textarea; Preview uses the same safe Markdown as the AI review.
+function bodyEditor(text) {
+  const area = el('textarea', { class: 'field mono pr-body', rows: 14, spellcheck: 'true', 'aria-label': 'Description' });
+  area.value = text;
+  const preview = el('div', { class: 'ai-body md pr-preview', hidden: true });
+  const tab = (label, show) => el('button', { type: 'button', role: 'tab', 'aria-selected': String(!show), onclick: (e) => {
+    preview.hidden = !show;
+    area.hidden = show;
+    if (show) preview.replaceChildren(...parseMarkdown(area.value).map(mdBlock));
+    for (const b of e.target.parentElement.children) b.setAttribute('aria-selected', String(b === e.target));
+  } }, label);
+  const tabs = el('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Description view' }, tab('Write', false), tab('Preview', true));
+  return { node: el('div', { class: 'pr-editor' }, tabs, area, preview), area };
+}
+
+async function createPrSheet(draft) {
+  const title = el('input', { class: 'field', type: 'text', maxlength: 256, value: draft.title, 'aria-label': 'Title',
+    onkeydown: (e) => { if (e.key === 'Enter') e.preventDefault(); } }); // Return never posts by accident
+  const label = el('select', { class: 'field compact', 'aria-label': 'Label' },
+    draft.labels.map((l) => el('option', { value: l, selected: l === draft.label }, l)));
+  const reviewers = reviewerBoxes(draft.reviewers);
+  const body = bodyEditor(draft.body);
+  const hint = el('p', { class: 'footnote' });
+  let created = null;
+  const ok = await confirmSheet({
+    title: 'Create a Pull Request',
+    body: [
+      el('p', { class: 'muted' }, `No PR exists for ${draft.key} yet. Check every detail; nothing is posted until you press Create PR.`),
+      el('label', { class: 'field-label' }, 'Title', title),
+      el('div', { class: 'pr-grid' },
+        el('div', {}, el('p', { class: 'list-label' }, 'Into'), el('p', { class: 'mono pill-mono' }, draft.base)),
+        el('div', {}, el('p', { class: 'list-label' }, 'From'), el('p', { class: 'mono pill-mono' }, draft.head))),
+      el('div', { class: 'pr-grid' },
+        el('label', { class: 'field-label' }, 'Label', label),
+        el('div', {}, el('p', { class: 'list-label' }, 'Assignee'), el('p', {}, 'You'))),
+      el('div', {}, el('p', { class: 'list-label' }, 'Reviewers'), reviewers),
+      el('div', {}, el('p', { class: 'list-label' }, 'Description'), body.node),
+      hint,
+    ],
+    confirmLabel: 'Create PR',
+    onReady: (okBtn, isBusy) => {
+      const sync = () => {
+        const missing = PLACEHOLDER.test(body.area.value);
+        okBtn.disabled = isBusy() || missing || !title.value.trim();
+        hint.textContent = missing ? 'Fill in or delete every [fill in: …] in the description to create the PR.' : '';
+      };
+      body.area.addEventListener('input', sync);
+      title.addEventListener('input', sync);
+      okBtn.closest('form').addEventListener('change', sync);
+      sync();
+    },
+    onConfirm: async () => {
+      created = await post(`/api/tickets/${draft.key}/pr`, {
+        title: title.value, body: body.area.value, head: draft.head, label: label.value,
+        reviewers: [...reviewers.querySelectorAll('input:checked')].map((i) => i.value),
+      });
+    },
+  });
+  return ok ? created : null;
+}
+
+async function requestPrReview(key) {
+  let draft;
+  try { draft = await api(`/api/tickets/${key}/pr-draft`); } catch (err) { toast(err.message, 'bad'); return; }
+  let pr = draft.existing;
+  if (!pr) {
+    pr = await createPrSheet(draft);
+    if (!pr) return;
+    toast(`Created PR #${pr.number}`, 'ok');
+  }
+  if (draft.status !== 'Dev Review') {
+    const moved = await confirmSheet({
+      title: `Move ${key} to Dev Review`,
+      body: [el('p', {}, `PR #${pr.number} is ready. Move the ticket from ${draft.status || 'its current status'} to Dev Review in Jira?`)],
+      confirmLabel: 'Move to Dev Review',
+      onConfirm: () => post(`/api/tickets/${key}/dev-review`),
+    });
+    if (moved) toast(`${key} moved to Dev Review`, 'ok');
+  }
+  await requestReview({ number: pr.number });
+  ctx.refresh();
+  loadSlow(true);
 }
 
 function qaFootnote(key, info, cooling) {
@@ -669,15 +820,45 @@ function tsNode(pr) {
   }, 'TS check');
 }
 
+// Markdown from the review bot, built node by node with textContent (see markdown.js).
+function mdInline(nodes) {
+  return nodes.map((n) => {
+    if (n.t === 'text') return n.v;
+    if (n.t === 'code') return el('code', {}, n.v);
+    if (n.t === 'b') return el('strong', {}, mdInline(n.v));
+    if (n.t === 'i') return el('em', {}, mdInline(n.v));
+    return ext(n.href, ...mdInline(n.v));
+  });
+}
+
+function mdBlock(block) {
+  switch (block.type) {
+    case 'h': return el(`h${Math.min(6, block.level + 2)}`, { class: 'md-h' }, mdInline(block.inlines));
+    case 'hr': return el('hr', {});
+    case 'code': return el('pre', { class: 'md-code' }, el('code', {}, block.text));
+    case 'quote': return el('blockquote', {}, mdInline(block.inlines));
+    case 'table': return el('div', { class: 'md-table' }, el('table', {},
+      el('thead', {}, el('tr', {}, block.rows[0].map((cell) => el('th', {}, mdInline(cell))))),
+      el('tbody', {}, block.rows.slice(1).map((row) => el('tr', {}, row.map((cell) => el('td', {}, mdInline(cell))))))));
+    case 'list': return el(block.ordered ? 'ol' : 'ul', { class: 'md-list' }, block.items.map((item) => el('li', {
+      class: item.checked === null ? '' : `task ${item.checked ? 'done' : ''}`, style: item.depth ? `margin-left:${item.depth * 16}px` : null,
+    }, item.checked === null ? null : el('span', { class: 'md-box', 'aria-label': item.checked ? 'Done' : 'Not done' }, item.checked ? '✓' : ''),
+    el('span', {}, mdInline(item.inlines)))));
+    default: return el('p', {}, mdInline(block.inlines));
+  }
+}
+
 function aiBody(state) {
   if (!state) return null;
   if (state.loading) return el('p', { class: 'muted' }, 'Loading…');
   if (state.error) return el('p', { class: 'muted' }, state.error);
   if (!state.summary) return el('p', { class: 'muted' }, 'No AI review on this PR yet.');
+  const { header, rest } = botHeader(state.summary.body);
   return [
-    el('p', { class: 'muted' },
-      `${state.inlineCount} inline ${plural(state.inlineCount, 'comment')} · ${ago(state.summary.createdAt)}`),
-    el('pre', { class: 'ai-body' }, state.summary.body),
+    el('p', { class: 'muted ai-meta' },
+      `${state.inlineCount} inline ${plural(state.inlineCount, 'comment')} · ${ago(state.summary.createdAt)}`,
+      header && ` · took ${header.took} · `, header && ext(header.url, 'View job')),
+    el('div', { class: 'ai-body md' }, parseMarkdown(rest).map(mdBlock)),
   ];
 }
 
@@ -714,7 +895,7 @@ function prActions(pr) {
     canQa && smallButton(() => sendToQa(pr), 'Send to QA'),
     canQa && smallButton(() => requestQa(pr), icon('team'), 'Request QA Review'),
     pr.author === ctx.shared.login && !pr.isDraft
-      && smallButton(() => requestReview(pr), icon('team'), 'Request Review'),
+      && smallButton(() => (pr.ticketKey ? requestPrReview(pr.ticketKey) : requestReview(pr)), icon('team'), 'Request PR Review'),
     pr.approved && el('button', {
       class: 'btn btn-filled btn-small', type: 'button', onclick: () => openBuildSheet(pr),
     }, 'Build'));
@@ -983,7 +1164,9 @@ function homeSections() {
 }
 
 // The ticket panel can open on any page, so its QA buttons are wired when this module loads, not when Home first shows.
-registerTicketActions({ requestQa: (ticket) => requestQa({ ticket }), sendToQa: (ticket) => sendToQa({ ticket }) });
+registerTicketActions({
+  requestQa: (ticket) => requestQa({ ticket }), sendToQa: (ticket) => sendToQa({ ticket }), requestPrReview: (ticket) => requestPrReview(ticket.key),
+});
 
 export default {
   id: 'home',
