@@ -171,3 +171,13 @@ test('QA testing one platform offers Build only when the PR is approved', () => 
   assert.equal(qa(true).action.kind, 'build');
   assert.notEqual(qa(false).action?.kind, 'build');
 });
+
+test('a ticket in QA that already has builds can get a new one, once the PR is approved', () => {
+  const qa = (approved) => one({
+    tickets: [ticket({ status: 'QA Review', assignee: { accountId: 'sana', name: 'Sana Ali' } })],
+    prs: [pr({ approved })], builds: { [KEY]: [build('412', 'Android'), build('409', 'iOS')] },
+  });
+  assert.equal(qa(true).blocker.kind, 'qa-testing');
+  assert.deepEqual(qa(true).secondary, { kind: 'build', label: 'New Build', pr: 1101, keys: null });
+  assert.equal(qa(false).secondary, null);
+});
