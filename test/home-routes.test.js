@@ -108,16 +108,6 @@ test('seen marks the feed read', async () => {
   server.close();
 });
 
-test('note is saved trimmed, limited to 1000 characters, and comes back', async () => {
-  const { server, req } = await boot();
-  assert.equal((await req('PUT', '/api/home/note', { text: 'x'.repeat(1001) })).status, 400);
-  assert.equal((await req('PUT', '/api/home/note', { text: 42 })).status, 400);
-  const saved = (await req('PUT', '/api/home/note', { text: '  Start with TCPMOB-1772  ' })).json();
-  assert.equal(saved.note.text, 'Start with TCPMOB-1772');
-  assert.equal((await req('GET', '/api/home')).json().note.text, 'Start with TCPMOB-1772');
-  server.close();
-});
-
 test('meeting titles never reach the data directory or logs', async () => {
   const lines = [];
   const original = { log: console.log, error: console.error, warn: console.warn };
@@ -126,7 +116,7 @@ test('meeting titles never reach the data directory or logs', async () => {
   try {
     await req('GET', '/api/home');
     await req('POST', '/api/home/seen');
-    await req('PUT', '/api/home/note', { text: 'n' });
+    await req('POST', '/api/home/todos', { text: 'n' });
   } finally {
     Object.assign(console, original);
     server.close();
@@ -188,5 +178,34 @@ test('a teammate lookup that failed is tried again', async () => {
   await req('GET', '/api/home?fresh=1');
   const team = (await req('GET', '/api/home?fresh=1')).json().team;
   assert.equal(team[1].doing, 'Testing TCPMOB-1700');
+  server.close();
+});
+
+// ---------- to-dos ----------
+
+test('to-dos: add, link, check off, delete; linked ones show on their My Work row', async () => {
+  const { server, req } = await boot();
+  assert.equal((await req('POST', '/api/home/todos', { text: '   ' })).status, 400);
+  const { todo } = (await req('POST', '/api/home/todos', { text: `Check Sana's result on ${KEY}` })).json();
+  assert.equal(todo.key, KEY);
+  const general = (await req('POST', '/api/home/todos', { text: 'Ask Hamza about spacing' })).json().todo;
+  let home = (await req('GET', '/api/home')).json();
+  assert.deepEqual(home.todos.map((t) => t.text), [`Check Sana's result on ${KEY}`, 'Ask Hamza about spacing']);
+  assert.deepEqual(home.work.find((r) => r.key === KEY).todos.map((t) => t.id), [todo.id]);
+  await req('PATCH', `/api/home/todos/${todo.id}`, { done: true });
+  await req('DELETE', `/api/home/todos/${general.id}`);
+  home = (await req('GET', '/api/home')).json();
+  assert.deepEqual(home.todos.map((t) => [t.text, t.done]), [[`Check Sana's result on ${KEY}`, true]]);
+  assert.equal((await req('PATCH', '/api/home/todos/nope', { done: true })).status, 404);
+  server.close();
+});
+
+test('at shift start, open to-dos lead the headline', async () => {
+  const { server, req } = await boot();
+  await req('POST', '/api/home/todos', { text: 'Ask Hamza about spacing' });
+  server.ctx.homeNow = () => new Date('2026-11-16T13:05:00+05:00');
+  const { headline } = (await req('GET', '/api/home?fresh=1')).json();
+  assert.equal(headline.text, '1 to-do from last night.');
+  assert.equal(headline.sub, 'Start with: Ask Hamza about spacing');
   server.close();
 });

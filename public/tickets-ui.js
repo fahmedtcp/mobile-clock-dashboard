@@ -107,7 +107,10 @@ function actionsRow(data) {
     data.canSendToQa && actions.requestQa
       && el('button', { type: 'button', class: 'btn btn-small', onclick: () => actions.requestQa(ticket) }, icon('team'), 'Request QA Review'),
     data.canSendToQa && actions.sendToQa
-      && el('button', { type: 'button', class: 'btn btn-small', onclick: () => actions.sendToQa(ticket) }, 'Send to QA'));
+      && el('button', { type: 'button', class: 'btn btn-small', onclick: () => actions.sendToQa(ticket) }, 'Send to QA'),
+    ticket.status === 'In Progress' && actions.requestPrReview
+      && el('button', { type: 'button', class: 'btn btn-small', onclick: () => { closeTicketPanel(); actions.requestPrReview(ticket); } },
+        icon('team'), 'Request PR Review'));
 }
 
 function panelContent(data) {

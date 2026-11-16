@@ -12,7 +12,9 @@ import { createCalendar } from './lib/calendar.js';
 import { connectionRoutes } from './lib/settings-test.js';
 import { createTempo } from './lib/time/tempo.js';
 import { snapshot as claudeSnapshot } from './lib/time/claude.js';
-import { startReminders } from './lib/time/reminder.js';
+import { startReminders, notify } from './lib/time/reminder.js';
+import { todoReminder } from './lib/home/todos.js';
+import { shiftState } from './public/shared.js';
 import { HttpError, readJson, id, RAW } from './lib/http.js';
 import { createJira, JiraError } from './lib/jira.js';
 import { createBranchList } from './lib/ghdata.js';
@@ -27,6 +29,7 @@ import * as time from './lib/time/routes.js';
 import * as teams from './lib/teams.js';
 import * as ticketPanel from './lib/ticket-panel.js';
 import * as home from './lib/home/routes.js';
+import * as prRequest from './lib/pr-request.js';
 import { createGh, GhError } from './lib/gh.js';
 import { getPr, createBehindCache, updateBranch } from './lib/prs.js';
 import { createTracker, BuildRequestError } from './lib/builds.js';
@@ -66,7 +69,7 @@ async function serveStatic(req, res) {
 }
 
 // Feature modules each export routes(ctx); later tasks append to this list.
-const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel, home];
+const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel, home, prRequest];
 
 // No reminder until workday hours are set: there's nothing to confirm yet.
 export const reminderSetting = (time) => (time.reminderOn && time.dayHours != null ? time.reminderAt : 'off');
@@ -284,6 +287,18 @@ async function summarizeDay(ctx, day) {
   };
 }
 
+function checkTodoReminder(ctx) {
+  const now = new Date();
+  const { shift, notifications } = ctx.settings.resolved();
+  const reminder = todoReminder({
+    now, shift: shiftState(now, shift), todos: ctx.homeStore.get('todos') ?? [],
+    lastSentOn: ctx.homeStore.get('todoReminderOn'), on: notifications,
+  });
+  if (!reminder) return;
+  ctx.homeStore.save('todoReminderOn', reminder.day);
+  notify(reminder).catch((err) => console.error('To-do reminder failed:', err.message));
+}
+
 function every(ms, job) {
   job();
   setInterval(job, ms);
@@ -305,6 +320,8 @@ function startBackgroundJobs({ ctx }, { tracker, ts }) {
     pendingDays: ctx.timePending,
     summarize: (day) => summarizeDay(ctx, day),
   });
+  // Open to-dos from last night: one macOS notification once the shift starts.
+  every(5 * 60 * 1000, () => { try { checkTodoReminder(ctx); } catch (err) { console.error('To-do reminder failed:', err.message); } });
   // Keep watching (and auto-retrying) triggered builds even when no tab is open.
   setInterval(() => {
     if (!tracker.list().some((build) => build.status !== 'completed')) return;

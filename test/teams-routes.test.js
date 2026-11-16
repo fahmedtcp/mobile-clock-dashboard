@@ -121,3 +121,18 @@ test('note is limited to 500 characters', async () => {
   gh.pr = { ...pr, number: 5 };
   assert.equal((await req('POST', '/api/prs/5/review-request', { logins: [], note: 'x'.repeat(501) })).status, 400);
 });
+
+test('a person added just for this message is looked up, mentioned, and only for this send', async () => {
+  const person = (await req('GET', '/api/people/hashfaqtcp')).json();
+  assert.deepEqual(person, { login: 'hashfaqtcp', name: 'Hamza Ashfaq', email: 'hashfaq@tcpsoftware.com' });
+  assert.equal((await req('GET', '/api/people/bad%20login!')).status, 400);
+  gh.pr = { ...pr, number: 6, reviewRequests: [] };
+  testSent.length = 0;
+  const res = await req('POST', '/api/prs/6/review-request', { logins: ['me', 'raja-tcp'], added: ['raja-tcp'], test: true });
+  assert.equal(res.status, 200);
+  assert.equal(testSent[0].attachments[0].content.body.at(-1).text, '<at>Foad Ahmed</at> raja-tcp');
+  assert.equal((await req('POST', '/api/prs/7/review-request', { logins: ['raja-tcp'], added: ['bad login!'], test: true })).status, 400);
+  assert.equal((await req('POST', '/api/prs/7/review-request', { logins: [], added: Array.from({ length: 6 }, (_, i) => `p${i}`), test: true })).status, 400);
+  const preview = (await req('GET', '/api/prs/6/review-request')).json();
+  assert.ok(!preview.people.some((p) => p.login === 'raja-tcp'), 'nothing is remembered');
+});

@@ -1,4 +1,4 @@
-import { $, api, el, icon, glyph, startFreshnessTicker } from './ui.js';
+import { $, api, post, el, icon, glyph, toast, startFreshnessTicker } from './ui.js';
 import { diffNotifications, pollDelay } from './notify.js';
 import home from './views/home.js';
 import release from './views/release.js';
@@ -77,6 +77,10 @@ const palette = () => openPalette({
   go: show,
   lookup: lookupTicket,
   openTicket: (key) => openTicketPanel(key),
+  addTodo: (text) => post('/api/home/todos', { text }).then(({ todo }) => {
+    toast(todo.key ? `To-do added on ${todo.key}` : 'To-do added', 'ok');
+    window.dispatchEvent(new Event('home:todos-changed'));
+  }, (err) => toast(err.message, 'bad')),
   setTheme: saveTheme,
 });
 $('palette-btn').addEventListener('click', palette);
