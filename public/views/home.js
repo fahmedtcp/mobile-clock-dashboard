@@ -9,6 +9,7 @@ import {
 import { submitState, behindStale } from '../notify.js';
 import { branchName, TICKET_KEY, shiftState } from '../shared.js';
 import { parseMarkdown, botHeader } from '../markdown.js';
+import { runLocal } from '../local-jobs.js';
 
 let ctx;
 const local = {
@@ -126,6 +127,8 @@ const todoHandlers = {
 };
 // ⌘K "todo …" adds from anywhere.
 window.addEventListener('home:todos-changed', () => loadSlow(true));
+// After a local job, behind counts and PR state may have changed.
+window.addEventListener('local:job-finished', () => { local.behind.clear(); ctx?.refresh(); loadSlow(true); });
 
 // Every 30 s: move the shift line; when the moment changes (start → mid → wrap), reload the cards.
 function tickShift() {
@@ -896,6 +899,8 @@ function prActions(pr) {
     canQa && smallButton(() => requestQa(pr), icon('team'), 'Request QA Review'),
     pr.author === ctx.shared.login && !pr.isDraft
       && smallButton(() => (pr.ticketKey ? requestPrReview(pr.ticketKey) : requestReview(pr)), icon('team'), 'Request PR Review'),
+    pr.author === ctx.shared.login && pr.ticketKey && smallButton(() => runLocal('update', pr.ticketKey), 'Update from Develop'),
+    pr.author === ctx.shared.login && pr.ticketKey && smallButton(() => runLocal('tests', pr.ticketKey), 'Run Tests'),
     pr.approved && el('button', {
       class: 'btn btn-filled btn-small', type: 'button', onclick: () => openBuildSheet(pr),
     }, 'Build'));

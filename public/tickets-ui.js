@@ -3,6 +3,7 @@
 // Jira text is shown with textContent only: a description or comment can never become markup.
 import { api, el, ext, icon, ago } from './ui.js';
 import { TICKET_KEY } from './shared.js';
+import { runLocal } from './local-jobs.js';
 
 const BATCH = 50;
 const BUILD_TTL_MS = 10 * 60 * 1000; // matches the server cache
@@ -108,6 +109,8 @@ function actionsRow(data) {
       && el('button', { type: 'button', class: 'btn btn-small', onclick: () => actions.requestQa(ticket) }, icon('team'), 'Request QA Review'),
     data.canSendToQa && actions.sendToQa
       && el('button', { type: 'button', class: 'btn btn-small', onclick: () => actions.sendToQa(ticket) }, 'Send to QA'),
+    el('button', { type: 'button', class: 'btn btn-small', onclick: () => { closeTicketPanel(); runLocal('update', ticket.key); } }, 'Update from Develop'),
+    el('button', { type: 'button', class: 'btn btn-small', onclick: () => { closeTicketPanel(); runLocal('tests', ticket.key); } }, 'Run Tests'),
     ticket.status === 'In Progress' && actions.requestPrReview
       && el('button', { type: 'button', class: 'btn btn-small', onclick: () => { closeTicketPanel(); actions.requestPrReview(ticket); } },
         icon('team'), 'Request PR Review'));
