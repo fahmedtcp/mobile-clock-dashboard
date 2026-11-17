@@ -9,6 +9,7 @@ import settings, { applyTheme } from './views/settings.js';
 import { openPalette } from './palette.js';
 import { enablePullToRefresh } from './pull.js';
 import { openTicketPanel } from './tickets-ui.js';
+import { watch as watchLocalJob } from './local-jobs.js';
 
 const VIEWS = [home, release, quality, team, time];
 // Settings sits at the bottom of the sidebar, outside the 1–5 shortcuts.
@@ -260,6 +261,7 @@ api('/api/settings')
   .then((saved) => { shared.settings = saved; applyTheme(saved.theme); })
   .catch(() => { /* keep the local theme */ });
 startFreshnessTicker();
+watchLocalJob(); // a Run Tests / Update job still running shows its bar again after a reload
 renderNav();
 show(current);
 checkJira();

@@ -507,6 +507,19 @@ textarea.field { font-family: var(--mono); font-size: .75rem; line-height: 1.5; 
 .add-person-row { display: flex; gap: 8px; align-items: center; }
 .add-person-row .field { flex: 1; }
 .add-person-status:empty { display: none; }
+.job-wrap { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 40; display: flex; flex-direction: column; align-items: center; gap: 8px;
+  width: min(760px, calc(100vw - 32px)); pointer-events: none; }
+.job-wrap > * { pointer-events: auto; }
+.job-wrap .job-tail { width: 100%; height: 300px; max-height: 45vh; margin: 0; background: var(--card); box-shadow: var(--shadow-lift); border-radius: 14px; }
+.job-bar { display: flex; align-items: center; gap: 10px; padding: 9px 12px 9px 14px; border-radius: 999px; background: var(--card);
+  box-shadow: var(--shadow-lift); font-size: 13px; max-width: 100%; }
+.job-output summary { cursor: pointer; font-weight: 600; color: var(--label-2); margin: 6px 0; }
+.job-output .job-tail { max-height: 320px; }
+.job-spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--fill-strong); border-top-color: var(--blue); animation: job-spin .9s linear infinite; flex: none; }
+@keyframes job-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .job-spin { animation: none; border-top-color: var(--fill-strong); } }
+.job-list { margin: 4px 0 0; padding-left: 18px; max-height: 220px; overflow: auto; }
+.job-tail { max-height: 220px; overflow: auto; font-family: var(--mono); font-size: 11px; background: var(--fill); border-radius: 8px; padding: 8px; white-space: pre-wrap; }
 
 /* ---------- lookup ---------- */
 
