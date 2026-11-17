@@ -1131,7 +1131,7 @@ main { position: relative; }
 .hc-empty { margin: 4px 0; }
 .link-btn { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--soft-blue); cursor: pointer; }
 
-.tk { display: grid; grid-template-columns: 210px 140px minmax(0, 1fr) 150px; gap: 16px; align-items: center;
+.tk { display: grid; grid-template-columns: 210px 140px minmax(0, 1fr) auto; gap: 16px; align-items: center;
   padding: 11px 10px; margin: 0 -10px; border-radius: 12px; cursor: pointer; }
 .tk + .tk { box-shadow: 0 -.5px 0 var(--separator); }
 .tk:hover, .tk:focus-visible { background: var(--fill); outline: none; }
@@ -1148,7 +1148,7 @@ main { position: relative; }
 .stage { font-size: 11px; color: var(--label-3); margin-top: 5px; }
 .tk .block { font-size: 13px; min-width: 0; }
 .tk .block b { font-weight: 650; }
-.acts { display: flex; justify-content: flex-end; }
+.acts { display: flex; justify-content: flex-end; flex-wrap: nowrap; }
 
 .item { display: flex; gap: 10px; padding: 9px 0; align-items: flex-start; }
 .item + .item { box-shadow: 0 -.5px 0 var(--separator); }

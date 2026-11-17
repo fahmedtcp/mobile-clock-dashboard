@@ -2,6 +2,64 @@
 
 A local dashboard for the mobile team. It connects `tcp-software/mobile-clock` on GitHub with TCPMOB tickets in Jira, so PRs, builds, tickets, releases, and code health live in one place.
 
+## At a Glance
+
+One screen answers the questions a developer asks all day: What's stuck? What changed while I was away? What do I do next? It pulls GitHub, Jira, Tempo, Teams, and the team's calendar into one place, so nobody has to check six tools to know where their work stands.
+
+> The screenshots and recordings below use sample data: the people, tickets, and pull requests are made up.
+
+### Home: The Shift at a Glance
+
+![Home: the headline, who's on shift, the shift line with meetings, and each ticket's next step](docs/media/home.png)
+
+- **One headline** names the most important thing right now, with the button that handles it.
+- **On Shift Now** shows what each teammate and QA is working on.
+- **The shift line** runs from 1 PM to 10 PM with today's meetings from the calendar.
+- **My Work** lists each ticket with its stage, what's blocking it, and one button to fix it.
+- **Since You Last Looked** shows comments, reviews, and status changes made by other people.
+
+Home changes with the shift: a standup draft and plan at the start, and a wrap-up checklist with to-dos for tomorrow at the end.
+
+![Clicking a ticket opens its details without leaving the page](docs/media/home-tour.gif)
+
+### Ticket Details Without Opening Jira
+
+![Ticket panel: status, last build, pull request, description, comments, and actions](docs/media/ticket-panel.png)
+
+### Request a Review in One Flow
+
+Request PR Review creates the pull request in the team's usual format if it doesn't exist yet, moves the ticket to Dev Review, and asks for a review on Teams. Nothing is posted until the developer confirms each step.
+
+![Request PR Review: the pull request is drafted in the team's format and previewed before anything is posted](docs/media/request-pr-review.gif)
+
+### Run Tests and Update a Branch
+
+Run Tests runs the app's full test suite on the developer's Mac and shows the output live. Update from Develop brings the branch up to date and asks before pushing.
+
+![Run Tests: live output, then a summary with coverage and failing tests](docs/media/run-tests.gif)
+
+![Test results: counts, coverage, failing tests, and the full output](docs/media/run-tests-results.png)
+
+### Time Tracking With Evidence
+
+The Time page suggests hours per ticket from real activity (Jira status changes, commits, builds, and coding sessions) and sends confirmed days to Tempo. Why Nh? shows exactly what the suggestion is based on.
+
+![Time: suggested hours per ticket, with the evidence behind them](docs/media/time-why.png)
+
+### Code Review and Team Health
+
+![AI review: the automated review summary, formatted for reading](docs/media/ai-review.png)
+
+![Quality: TypeScript error trend and test pass rates](docs/media/quality.png)
+
+![Team: who's waiting on reviews](docs/media/team.png)
+
+### Light or Dark, Set Up Per Person
+
+![Home in dark mode](docs/media/home-dark.png)
+
+![Settings: shift hours, meetings from the calendar, and the team list](docs/media/settings-shift-team.png)
+
 ## Requirements
 
 - Node 20 or later
