@@ -175,3 +175,39 @@ test('queue routes add, list, and cancel; DELETE also cancels a retry wait', asy
     assert.equal((await call('DELETE', '/api/build-queue/nope')).status, 404);
   } finally { server.close(); }
 });
+
+// ---------- final review fixes ----------
+test('losing the slot race keeps the entry in line', async () => {
+  const { tracker, queue, notes } = setup();
+  tracker.triggerError = Object.assign(new BuildRequestError('A build like this is already running. Nothing was started.', 409), { conflicts: { mkIos: [{ rule: 'ios-slot' }] } });
+  const e = queue.add({ prNumber: 5, key: 'mkIos', branch: 'b' });
+  await queue.tick();
+  assert.deepEqual(queue.list(), [e]);
+  assert.deepEqual(notes, []);
+});
+
+test('a network error keeps the entry in line instead of losing it', async () => {
+  const { tracker, queue } = setup();
+  tracker.triggerError = new Error('socket hang up');
+  const e = queue.add({ prNumber: 5, key: 'mkIos', branch: 'b' });
+  await queue.tick();
+  assert.deepEqual(queue.list(), [e]);
+});
+
+test('overlapping ticks share one pass, so a slot never starts twice', async () => {
+  const { tracker, queue } = setup();
+  queue.add({ prNumber: 5, key: 'mcIos', branch: 'a' });
+  queue.add({ prNumber: 6, key: 'mcIos', branch: 'b' });
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const t = tracker.trigger.bind(tracker);
+  let calls = 0;
+  tracker.trigger = async (...a) => { calls += 1; if (calls === 1) await gate; return t(...a); };
+  const first = queue.tick();
+  await new Promise((r) => setImmediate(r));
+  const second = queue.tick();
+  release();
+  await Promise.all([first, second]);
+  assert.equal(calls, 1);
+  assert.equal(tracker.built.length, 1);
+});

@@ -1236,10 +1236,10 @@ details.more > summary { cursor: pointer; font-weight: 600; color: var(--label-2
 .group > li.day-label { padding: 14px 16px 6px; color: var(--label-2); font-size: .75rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; background: none; }
 .group > li.day-label::before, .group > li.day-label + li::before { display: none; }
 .builds-week { margin-top: 12px; text-align: center; font-variant-numeric: tabular-nums; }
-#view-builds .group > li { transition: opacity 200ms ease-out; }
-@starting-style { #view-builds .group > li { opacity: 0; } }
+#view-builds .group > li.row-new { transition: opacity 200ms ease-out; }
+@starting-style { #view-builds .group > li.row-new { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) {
-  .slot-track span, .slot-dot, #view-builds .group > li { transition: none; }
+  .slot-track span, .slot-dot, #view-builds .group > li.row-new { transition: none; }
 }
 
 /* ---------- editable Teams message ---------- */

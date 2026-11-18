@@ -68,7 +68,7 @@ test('same branch ios run is one conflict, reported as same-branch', () => {
 });
 
 test('requested tracker build holds its slot', () => {
-  const tracked = [{ id: 't1', key: 'mkIos', status: 'requested', runId: null, branch: 'TCPMOB-1780-b2', triggeredAt: 5 }];
+  const tracked = [{ id: 't1', key: 'mkIos', status: 'requested', runId: null, branch: 'TCPMOB-1780-b2', triggeredAt: Date.now() }];
   const c = findConflicts({ keys: ['mkIos'], branch: BRANCH, active: {}, tracked });
   assert.equal(c.mkIos.length, 1);
   assert.equal(c.mkIos[0].rule, 'ios-slot');
@@ -108,7 +108,15 @@ test('ticketKeyOf reads the key from a branch name', () => {
 });
 
 test('requested tracker build on the same branch is a same-branch conflict', () => {
-  const tracked = [{ id: 't1', key: 'mcIos', status: 'requested', runId: null, branch: BRANCH, triggeredAt: 5 }];
+  const tracked = [{ id: 't1', key: 'mcIos', status: 'requested', runId: null, branch: BRANCH, triggeredAt: Date.now() }];
   const c = findConflicts({ keys: ['mcIos'], branch: BRANCH, active: {}, tracked });
   assert.deepEqual(c.mcIos.map((x) => x.rule), ['same-branch']);
+});
+
+test('a requested build holds its slot only for 10 minutes', () => {
+  const now = Date.parse('2026-11-18T12:00:00Z');
+  const fresh = [{ id: 'a', key: 'mcIos', status: 'requested', runId: null, branch: 'b', triggeredAt: now - 9 * 60e3 }];
+  const stale = [{ id: 'a', key: 'mcIos', status: 'requested', runId: null, branch: 'b', triggeredAt: now - 11 * 60e3 }];
+  assert.ok(slotBusy({ file: 'run-mc-ios.yml', active: {}, tracked: fresh, now }));
+  assert.equal(slotBusy({ file: 'run-mc-ios.yml', active: {}, tracked: stale, now }), null);
 });

@@ -18,6 +18,13 @@ let ctx;
 let container;
 let filter = readFilter();
 let wasBusy = new Map(); // slot file -> busy on the last update, for the "is free" toast
+const seenRows = new Set(); // rows already shown: only rows that weren't there before fade in
+
+function fadeIfNew(li, key) {
+  if (!seenRows.has(key)) li.classList.add('row-new');
+  seenRows.add(key);
+  return li;
+}
 
 function readFilter() {
   try { return FILTERS[localStorage.getItem(FILTER_KEY)] ? localStorage.getItem(FILTER_KEY) : 'all'; } catch { return 'all'; }
@@ -74,13 +81,13 @@ function cancelWaiting(item) {
 }
 
 function waitingRow(item) {
-  return el('li', {}, el('div', { class: 'row' },
+  return fadeIfNew(el('li', {}, el('div', { class: 'row' },
     glyph('clock', 'orange'),
     el('div', { class: 'row-body' },
       el('div', { class: 'row-title' }, item.label),
       el('div', { class: 'row-sub' }, ticket(item.ticketKey, item.branch), sep(),
         el('span', {}, item.kind === 'retry' ? 'Waiting for iOS slot to retry' : `Queued ${ago(new Date(item.since).toISOString())}`))),
-    el('div', { class: 'row-trail' }, smallButton(() => cancelWaiting(item), 'Cancel'))));
+    el('div', { class: 'row-trail' }, smallButton(() => cancelWaiting(item), 'Cancel')))), `w:${item.id}`);
 }
 
 function cancelRun(run) {
@@ -95,7 +102,7 @@ function cancelRun(run) {
 
 function runningRow(run) {
   const ios = run.file.includes('-ios');
-  return el('li', {}, el('div', { class: 'row' },
+  return fadeIfNew(el('li', {}, el('div', { class: 'row' },
     glyph(ios ? 'phone' : 'hammer', ios ? 'gray' : 'green'),
     el('div', { class: 'row-body' },
       el('div', { class: 'row-title' }, run.label),
@@ -104,10 +111,20 @@ function runningRow(run) {
     el('div', { class: 'row-trail' },
       statusChip(run), linkButton(run.url, 'Open'),
       run.mine && smallButton(() => cancelRun(run), 'Cancel', 'btn-danger'))),
-  el('div', { class: 'progress-line', 'aria-hidden': 'true' }));
+  el('div', { class: 'progress-line', 'aria-hidden': 'true' })), `r:${run.runId}`);
 }
 
-function rerun(run) {
+// A rerun is a new TestFlight upload: warn first when that iOS slot is busy.
+async function rerun(run) {
+  const busy = ctx.shared.overview?.slots.find((slot) => slot.file === run.file)?.busy;
+  if (busy) {
+    const ok = await confirmSheet({
+      title: 'iOS Slot Is Busy',
+      body: [el('p', {}, `${run.label} is already building ${busy.ticketKey ?? busy.branch}. A rerun now fails on TestFlight.`)],
+      confirmLabel: 'Rerun Anyway',
+    });
+    if (!ok) return;
+  }
   post(`/api/runs/${run.runId}/rerun`).then(() => { toast('Rerun started', 'ok'); ctx.refresh(); }, (err) => toast(err.message, 'bad'));
 }
 
@@ -121,7 +138,7 @@ function historyRow(run) {
   const { build } = run;
   const failed = run.conclusion !== 'success';
   const color = build?.classification?.kind === 'code' ? 'red' : build?.classification?.kind === 'infra' ? 'orange' : '';
-  return el('li', {},
+  return fadeIfNew(el('li', {},
     el('div', { class: 'row' },
       glyph(ios ? 'phone' : 'hammer', ios ? 'gray' : 'green'),
       el('div', { class: 'row-body' },
@@ -140,7 +157,7 @@ function historyRow(run) {
         buildAgain(run))),
     failed && build?.reason && el('details', { class: 'reason' },
       el('summary', {}, build.reason.step),
-      build.reason.lines?.length ? el('pre', {}, build.reason.lines.join('\n')) : null));
+      build.reason.lines?.length ? el('pre', {}, build.reason.lines.join('\n')) : null)), `h:${run.runId}`);
 }
 
 function dayLabel(iso) {
