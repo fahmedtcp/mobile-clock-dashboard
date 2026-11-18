@@ -31,6 +31,7 @@ import * as ticketPanel from './lib/ticket-panel.js';
 import * as home from './lib/home/routes.js';
 import * as prRequest from './lib/pr-request.js';
 import * as localRepo from './lib/local-repo.js';
+import * as buildQueue from './lib/build-queue.js';
 import { createGh, GhError } from './lib/gh.js';
 import { getPr, createBehindCache, updateBranch } from './lib/prs.js';
 import { createTracker, BuildRequestError } from './lib/builds.js';
@@ -70,7 +71,7 @@ async function serveStatic(req, res) {
 }
 
 // Feature modules each export routes(ctx); later tasks append to this list.
-const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel, home, prRequest, localRepo];
+const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel, home, prRequest, localRepo, buildQueue];
 
 // No reminder until workday hours are set: there's nothing to confirm yet.
 export const reminderSetting = (time) => (time.reminderOn && time.dayHours != null ? time.reminderAt : 'off');
@@ -309,6 +310,7 @@ function every(ms, job) {
 
 // Background jobs start only once this process owns the port.
 function startBackgroundJobs({ ctx }, { tracker, ts }) {
+  const { queue } = ctx;
   // TypeScript error count on develop: at most once a day, checked hourly.
   every(HOUR_MS, () => { if (ts.isStale()) ts.runDevelop(); });
   // Keep the dashboard's own Claude summaries, so Claude's 30-day log cleanup doesn't lose history.
@@ -325,10 +327,12 @@ function startBackgroundJobs({ ctx }, { tracker, ts }) {
   });
   // Open to-dos from last night: one macOS notification once the shift starts.
   every(5 * 60 * 1000, () => { try { checkTodoReminder(ctx); } catch (err) { console.error('To-do reminder failed:', err.message); } });
-  // Keep watching (and auto-retrying) triggered builds even when no tab is open.
+  // Keep watching (and auto-retrying) triggered builds, and start queued iOS builds, even when no tab is open.
   setInterval(() => {
-    if (!tracker.list().some((build) => build.status !== 'completed')) return;
-    tracker.refresh().catch((err) => console.error('Build refresh failed:', err.message));
+    const watching = tracker.list().some((build) => build.status !== 'completed');
+    if (!watching && !queue.list().length) return;
+    tracker.refresh().then(() => queue.tick())
+      .catch((err) => console.error('Build refresh failed:', err.message));
   }, BACKGROUND_REFRESH_MS);
 }
 
