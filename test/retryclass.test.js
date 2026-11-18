@@ -42,3 +42,7 @@ test('anything else is unknown', () => {
   assert.deepEqual(classifyFailure('failure', r('fastlane finished with errors')), { kind: 'unknown', label: 'Unknown failure' });
   assert.deepEqual(classifyFailure('failure', null), { kind: 'unknown', label: 'Unknown failure' });
 });
+
+test('TestFlight duplicate upload stays retryable', () => {
+  assert.notEqual(classifyFailure('failure', { lines: ['ERROR ITMS-90189: "Redundant Binary Upload. You\'ve already uploaded a build with build number \'512\'"'] }).kind, 'code');
+});

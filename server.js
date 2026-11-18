@@ -145,8 +145,9 @@ async function handleUpdateBranch(ctx, match) {
 
 async function handleTriggerBuilds(ctx, match, req) {
   const prNumber = id(match[1]);
-  const { keys } = await readJson(req);
-  return ctx.tracker.trigger(prNumber, keys);
+  const { keys, force } = await readJson(req);
+  const forced = Array.isArray(force) ? force.filter((k) => typeof k === 'string') : [];
+  return ctx.tracker.trigger(prNumber, keys, { force: forced });
 }
 
 function handleBuildsConfig(ctx) {
@@ -189,6 +190,7 @@ function coreRoutes(ctx) {
     ['POST', /^\/api\/prs\/([^/]+)\/update-branch$/, (m) => handleUpdateBranch(ctx, m)],
     ['POST', /^\/api\/prs\/([^/]+)\/builds$/, (m, req) => handleTriggerBuilds(ctx, m, req)],
     ['GET', /^\/api\/builds$/, () => ctx.tracker.refresh()],
+    ['GET', /^\/api\/prs\/([^/]+)\/build-check$/, (m) => ctx.tracker.check(id(m[1]))],
     ['GET', /^\/api\/builds-config$/, () => handleBuildsConfig(ctx)],
     ...connectionRoutes(ctx),
     ['GET', /^\/api\/settings$/, () => ctx.settings.publicView()],
@@ -204,7 +206,7 @@ const JIRA_PASSTHROUGH = [400, 403, 404, 409, 503];
 
 function sendError(res, err) {
   if (err instanceof HttpError || err instanceof BuildRequestError) {
-    return send(res, err.status, { error: err.message, started: err.started });
+    return send(res, err.status, { error: err.message, started: err.started, conflicts: err.conflicts });
   }
   if (err instanceof GhError) return send(res, 502, { error: err.message });
   if (err instanceof JiraError) {
