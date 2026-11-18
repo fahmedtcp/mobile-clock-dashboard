@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildOverview, median } from '../lib/build-overview.js';
+import { buildOverview, buildHistory, median } from '../lib/build-overview.js';
 
 const NOW = new Date(2026, 10, 18, 14, 0).getTime(); // Wednesday 2 PM local
 const iso = (ms) => new Date(ms).toISOString();
@@ -103,4 +103,16 @@ test('waiting lists queue entries and retry waits, oldest first', async () => {
     ['w', 'retry', 'iOS MobileKiosk', 'TCPMOB-9', NOW - 5e3],
   ]);
   assert.equal(o.slots[1].waiting, 1);
+});
+
+test('buildHistory everyone: all actors completed runs from 14 days, mine marked, no actor filter sent', async () => {
+  const gh = fakeGh([
+    rest({ file: 'run-mc-ios.yml', actor: 'hamza', start: NOW - 2 * 3600e3 }),
+    rest({ file: 'run-mk-android.yml', actor: 'me', start: NOW - 3600e3 }),
+    rest({ file: 'run-mc-ios.yml', actor: 'hamza', status: 'in_progress' }),
+  ]);
+  const h = await buildHistory({ gh, tracker: tracker(), login: 'me', now: () => NOW });
+  assert.deepEqual(h.map((r) => [r.label, r.actor, r.mine]), [['Android MobileKiosk', 'me', true], ['iOS MobileClock', 'hamza', false]]);
+  assert.ok(gh.calls.every((a) => !a.some((x) => x.startsWith('actor='))));
+  assert.ok(gh.calls.every((a) => a.includes('created=>=2026-11-04')));
 });

@@ -1,4 +1,4 @@
-// Builds: whether an iOS build can start right now, what's waiting and running, and your build history.
+// Builds: whether an iOS build can start right now, what's waiting and running, and build history (yours or everyone's).
 import {
   $, api, post, el, ext, ago, sep, statusChip, showError, confirmSheet, toast, section, glyph, skeleton, empty, sectionFreshness,
 } from '../ui.js';
@@ -6,6 +6,7 @@ import { openBuildSheet, createBug, installOnSim, segmented, bindContext } from 
 
 const POLL_MS = 60000;
 const FILTER_KEY = 'builds.filter';
+const SCOPE_KEY = 'builds.scope';
 const KEY_OF = { 'run-mc-ios.yml': 'mcIos', 'run-mk-ios.yml': 'mkIos', 'run-mc-android.yml': 'mcAndroid', 'run-mk-android.yml': 'mkAndroid' };
 const FILTERS = {
   all: () => true,
@@ -17,6 +18,8 @@ const FILTERS = {
 let ctx;
 let container;
 let filter = readFilter();
+let scope = readScope(); // 'mine' or 'everyone'
+let everyone = { at: 0, rows: null, error: null, loading: false }; // everyone's history, fetched only while shown
 let wasBusy = new Map(); // slot file -> busy on the last update, for the "is free" toast
 const seenRows = new Set(); // rows already shown: only rows that weren't there before fade in
 
@@ -24,6 +27,10 @@ function fadeIfNew(li, key) {
   if (!seenRows.has(key)) li.classList.add('row-new');
   seenRows.add(key);
   return li;
+}
+
+function readScope() {
+  try { return localStorage.getItem(SCOPE_KEY) === 'everyone' ? 'everyone' : 'mine'; } catch { return 'mine'; }
 }
 
 function readFilter() {
@@ -145,13 +152,14 @@ function historyRow(run) {
         el('div', { class: 'row-title' }, run.label),
         el('div', { class: 'row-sub' }, ticket(run.ticketKey, run.branch), run.ticketKey && sep(),
           run.ticketKey && el('span', { class: 'mono', title: run.branch }, run.branch), sep(),
+          scope === 'everyone' && [el('span', {}, run.mine ? 'You' : run.actor), sep()],
           el('span', { class: 'num' }, minutes(run.durationMs)), sep(), el('span', {}, ago(run.createdAt)),
           build?.retries ? [sep(), el('span', {}, `${build.retries} auto-${build.retries === 1 ? 'retry' : 'retries'}`)] : null)),
       el('div', { class: 'row-trail' },
         build?.classification && failed && el('span', { class: `chip ${color}` }, build.classification.label),
         statusChip(run),
         linkButton(run.url, 'Open'),
-        failed && run.conclusion !== 'cancelled' && smallButton(() => rerun(run), 'Rerun Failed'),
+        failed && run.mine && run.conclusion !== 'cancelled' && smallButton(() => rerun(run), 'Rerun Failed'),
         failed && build && smallButton(() => createBug(build), 'Create Bug'),
         !failed && build?.key === 'mcIosSim' && smallButton(() => installOnSim(build), 'Install on Simulator'),
         buildAgain(run))),
@@ -170,6 +178,7 @@ function dayLabel(iso) {
 }
 
 function historyItems(history) {
+  if (!history) return skeleton(4);
   const shown = history.filter(FILTERS[filter]);
   if (!shown.length) {
     return [empty('hammer', filter === 'all' ? 'No builds in the last 14 days.' : 'Nothing matches this filter.', '', 'gray')];
@@ -182,6 +191,23 @@ function historyItems(history) {
     out.push(historyRow(run));
   }
   return out;
+}
+
+// Everyone's history is a separate, heavier read: fetch it when that view is open and the copy is a poll old.
+function loadEveryone() {
+  if (scope !== 'everyone' || everyone.loading || Date.now() - everyone.at < POLL_MS) return;
+  everyone.loading = true;
+  api('/api/builds/history').then(
+    (rows) => { everyone = { at: Date.now(), rows, error: null, loading: false }; },
+    (err) => { everyone = { ...everyone, at: Date.now(), error: err, loading: false }; },
+  ).then(paintHistory);
+}
+
+function paintHistory() {
+  const mine = scope === 'mine';
+  showError($('build-history-error'), mine ? null : everyone.error);
+  $('build-history').replaceChildren(...historyItems(mine ? ctx.shared.overview?.history : everyone.rows));
+  loadEveryone();
 }
 
 // ---------- render ----------
@@ -214,7 +240,7 @@ function render(shared, errors = {}) {
   $('build-waiting-section').hidden = !o.waiting.length;
   $('build-waiting').replaceChildren(...o.waiting.map(waitingRow));
   $('build-running').replaceChildren(...(o.running.length ? o.running.map(runningRow) : [empty('check', 'No builds running.', '', 'gray')]));
-  $('build-history').replaceChildren(...historyItems(o.history));
+  paintHistory();
   $('builds-week').textContent = weekLine(o.week);
   sectionFreshness('build-running', { at: shared.loadedAt.overview, intervalMs: POLL_MS, error: errors.overview, onRefresh: ctx.refresh });
   tick();
@@ -243,13 +269,18 @@ export default {
     const filterControl = segmented('History filter', [['all', 'All'], ['ios', 'iOS'], ['android', 'Android'], ['failed', 'Failed']], filter, (value) => {
       filter = value;
       try { localStorage.setItem(FILTER_KEY, value); } catch { /* storage blocked */ }
-      $('build-history').replaceChildren(...historyItems(ctx.shared.overview?.history ?? []));
+      paintHistory();
+    });
+    const scopeControl = segmented('Whose builds', [['mine', 'Mine'], ['everyone', 'Everyone']], scope, (value) => {
+      scope = value;
+      try { localStorage.setItem(SCOPE_KEY, value); } catch { /* storage blocked */ }
+      paintHistory();
     });
     node.append(
       el('div', { id: 'builds-slots', class: 'slot-card', role: 'status', 'aria-live': 'polite' }),
       section('build-waiting', 'Waiting to Start', ['clock', 'orange']),
       section('build-running', 'Running Now', ['bolt', 'orange']),
-      section('build-history', 'Your History', ['hammer', 'indigo'], filterControl),
+      section('build-history', 'Build History', ['hammer', 'indigo'], el('div', { class: 'history-controls' }, scopeControl, filterControl)),
       el('p', { id: 'builds-week', class: 'footnote builds-week' }));
     $('build-waiting-section').hidden = true;
     render(ctx.shared, ctx.errors);
