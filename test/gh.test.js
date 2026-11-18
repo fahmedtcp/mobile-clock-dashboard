@@ -140,3 +140,15 @@ test('a read that starts during a write is not reused after the write finishes',
   await write;
   assert.equal(await gh.run(args), 'v2\n', 'refetched after the write');
 });
+
+test('fresh skips a cache hit but still refreshes the cache', async () => {
+  const { gh, fetchCalls } = setup({ fetchImpl: () => ok([{ a: 1 }]) });
+  const args = ['api', `repos/${R}/actions/workflows/run-mc-ios.yml/runs`, '-X', 'GET', '-f', 'per_page=30'];
+  await gh.json(args);
+  await gh.json(args);
+  assert.equal(fetchCalls.length, 1);
+  await gh.json(args, { fresh: true });
+  assert.equal(fetchCalls.length, 2);
+  await gh.json(args);
+  assert.equal(fetchCalls.length, 2);
+});
