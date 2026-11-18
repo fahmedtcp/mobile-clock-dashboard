@@ -715,15 +715,18 @@ async function requestQa(pr) {
 
 // ---------- build sheet ----------
 
+// Each build is a row: its checkbox, then room for a conflict warning right under it (filled by paintConflicts).
 function buildCheckboxes(preselect = null) {
-  const boxes = ctx.shared.buildConfig.map((config) => {
+  const rows = ctx.shared.buildConfig.map((config) => {
     const [platform, ...rest] = config.label.split(' ');
-    return el('label', { class: 'choice' },
-      el('input', { type: 'checkbox', value: config.key, checked: preselect ? preselect.includes(config.key) : config.defaultChecked !== false }),
-      el('span', { class: 'choice-label' }, rest.join(' ')),
-      el('span', { class: 'choice-platform' }, platform));
+    return el('div', { class: 'choice-row', 'data-key': config.key },
+      el('label', { class: 'choice' },
+        el('input', { type: 'checkbox', value: config.key, checked: preselect ? preselect.includes(config.key) : config.defaultChecked !== false }),
+        el('span', { class: 'choice-label' }, rest.join(' ')),
+        el('span', { class: 'choice-platform' }, platform)),
+      el('div', { class: 'build-warn', hidden: true }));
   });
-  return el('fieldset', { class: 'choice-list' }, el('legend', { class: 'sr-only' }, 'Builds'), boxes);
+  return el('fieldset', { class: 'choice-list' }, el('legend', { class: 'sr-only' }, 'Builds'), rows);
 }
 
 // Uncheck builds that already started so a retry can't dispatch them twice.
@@ -734,11 +737,61 @@ function uncheckStarted(fieldset, startedKeys) {
   }
 }
 
-// onReady handler: the confirm button counts the checked builds and locks the list while sending.
-function syncBuildButton(fieldset, checked) {
+const minutesSince = (iso) => (iso ? Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)) : null);
+
+function conflictText(label, c) {
+  const mins = minutesSince(c.startedAt);
+  const took = mins === null ? '' : ` (${mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} hr ${mins % 60} min`})`;
+  if (c.rule === 'same-branch') return `${label} is already building this branch${took}.`;
+  return `${label} is already building ${c.ticketKey ?? c.branch} for ${c.actor ?? 'someone'}${took}. A second iOS build fails on TestFlight.`;
+}
+
+// Build sheet state: what's checked, what's queued to start when its iOS slot frees up, and what clashes.
+function buildSheetState(fieldset) {
+  const state = { conflicts: {}, queued: new Set(), warned: new Set() };
+  const box = (key) => fieldset.querySelector(`input[value="${key}"]`);
+  const checked = () => [...fieldset.querySelectorAll('input:checked')].map((i) => i.value);
+  state.startKeys = () => checked().filter((k) => !state.queued.has(k));
+  state.queueKeys = () => checked().filter((k) => state.queued.has(k));
+  state.force = () => state.startKeys().filter((k) => state.conflicts[k]?.length);
+  state.counts = () => ({ start: state.startKeys().length, queue: state.queueKeys().length });
+  const changed = () => fieldset.closest('form')?.dispatchEvent(new Event('change'));
+
+  // A box that first shows a conflict starts unchecked; re-checking it means "start anyway".
+  state.paint = (conflicts) => {
+    Object.assign(state.conflicts, conflicts);
+    for (const row of fieldset.querySelectorAll('.choice-row')) {
+      const { key } = row.dataset;
+      const list = state.conflicts[key] ?? [];
+      const warn = row.querySelector('.build-warn');
+      if (!list.length) { warn.hidden = true; warn.replaceChildren(); continue; }
+      if (!state.warned.has(key)) { state.warned.add(key); box(key).checked = false; state.queued.delete(key); }
+      const label = ctx.shared.buildConfig.find((b) => b.key === key)?.label ?? key;
+      const slot = list.find((c) => c.rule === 'ios-slot') && !list.some((c) => c.rule === 'same-branch');
+      const queueBtn = slot && el('button', {
+        type: 'button', class: 'btn btn-small', 'aria-pressed': String(state.queued.has(key)),
+        onclick: () => {
+          if (state.queued.has(key)) state.queued.delete(key);
+          else { state.queued.add(key); box(key).checked = true; }
+          state.paint({});
+          changed();
+        },
+      }, state.queued.has(key) ? 'Will Start When Free' : 'Start When Free');
+      warn.replaceChildren(...[el('span', {}, conflictText(label, list[0])), queueBtn].filter(Boolean)); // a null would print as text
+      warn.hidden = false;
+    }
+  };
+  fieldset.addEventListener('change', (e) => {
+    if (e.target.matches('input') && !e.target.checked && state.queued.delete(e.target.value)) state.paint({});
+  });
+  return state;
+}
+
+// onReady handler: the confirm button says what will start and what will queue, and locks the list while sending.
+function syncBuildButton(fieldset, counts) {
   return (okBtn, isBusy) => {
     const update = () => {
-      const state = submitState(checked().length, isBusy());
+      const state = submitState(counts(), isBusy());
       okBtn.textContent = state.label;
       okBtn.disabled = state.disabled;
       fieldset.disabled = isBusy();
@@ -748,25 +801,43 @@ function syncBuildButton(fieldset, checked) {
   };
 }
 
-async function openBuildSheet(pr, preselect = null) {
+export async function openBuildSheet(pr, preselect = null) {
   const fieldset = buildCheckboxes(preselect);
-  const checked = () => [...fieldset.querySelectorAll('input:checked')].map((i) => i.value);
+  const sheet = buildSheetState(fieldset);
+  const checking = el('p', { class: 'footnote build-check', role: 'status' }, 'Checking for running builds…');
+  api(`/api/prs/${pr.number}/build-check`).then(({ conflicts }) => {
+    sheet.paint(conflicts);
+    checking.textContent = Object.values(conflicts).some((l) => l.length) ? '' : 'No running builds in the way.';
+    fieldset.closest('form')?.dispatchEvent(new Event('change'));
+  }, () => { checking.textContent = 'Couldn\'t check for running builds. You can still start them.'; });
   let made = [];
+  let queued = 0;
   const ok = await confirmSheet({
     title: `Build #${pr.number}`,
     body: [
       el('p', { class: 'sheet-title' }, pr.title),
       el('p', { class: 'mono pill-mono' }, pr.headRefName),
       el('div', {}, el('p', { class: 'list-label', 'aria-hidden': 'true' }, 'Dev builds'), fieldset),
+      checking,
       el('p', { class: 'footnote' },
         'Dev builds only. QA and InfoSec aren\'t notified. Network and runner failures are retried automatically.'),
     ],
-    onReady: syncBuildButton(fieldset, checked),
+    onReady: syncBuildButton(fieldset, sheet.counts),
     onConfirm: async () => {
       fieldset.disabled = true;
+      const startKeys = sheet.startKeys();
+      const queueKeys = sheet.queueKeys();
       try {
-        made = await post(`/api/prs/${pr.number}/builds`, { keys: checked() });
+        if (startKeys.length) {
+          made = await post(`/api/prs/${pr.number}/builds`, { keys: startKeys, force: sheet.force() });
+          uncheckStarted(fieldset, startKeys); // a failed queue step below must not start them again
+        }
+        for (const key of queueKeys) {
+          await post('/api/build-queue', { prNumber: pr.number, key });
+          queued += 1;
+        }
       } catch (err) {
+        if (err.data?.conflicts) sheet.paint(err.data.conflicts); // started since the sheet opened
         uncheckStarted(fieldset, err.data?.started ?? []);
         fieldset.disabled = false;
         throw err;
@@ -775,7 +846,9 @@ async function openBuildSheet(pr, preselect = null) {
   });
   if (!ok) return;
   ctx.shared.builds.push(...made);
-  toast(`Started ${made.length} ${plural(made.length, 'build')}`, 'ok');
+  const startedText = made.length ? `Started ${made.length} ${plural(made.length, 'build')}` : '';
+  toast(startedText && queued ? `${startedText}, queued ${queued}`
+    : queued ? `Queued ${queued} ${plural(queued, 'build')}. You'll get a notification when it starts.` : startedText, 'ok');
   ctx.refresh();
 }
 

@@ -577,6 +577,13 @@ dialog.sheet::backdrop {
 .choice input:checked::after { transform: translateY(-1px) rotate(-45deg) scale(1); }
 .choice-label { flex: 1; font-weight: 500; }
 .choice-platform { color: var(--label-2); font-size: .75rem; font-weight: 600; }
+.choice-row { position: relative; }
+.choice-row + .choice-row::before { content: ''; position: absolute; top: 0; left: 48px; right: 0; height: .5px; background: var(--separator); z-index: 1; }
+.build-warn { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -4px 14px 10px 48px; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--orange-vivid) 16%, transparent); color: var(--label); font-size: .8125rem; line-height: 1.35; }
+.build-warn[hidden] { display: none; }
+.build-warn span { flex: 1 1 220px; }
+.build-warn .btn[aria-pressed="true"] { background: var(--orange-vivid); color: #000; }
+.build-check { min-height: 1.4em; }
 fieldset:disabled .choice { opacity: .5; cursor: default; }
 .footnote { margin: 0; color: var(--label-2); font-size: .75rem; line-height: 1.4; }
 .sheet-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
