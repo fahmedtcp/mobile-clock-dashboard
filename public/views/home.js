@@ -68,12 +68,7 @@ function act(action) {
     case 'request-pr-review': requestPrReview(action.key); break;
     case 'send-to-qa': {
       const row = local.home?.work.find((r) => r.key === action.key);
-      sendToQa({ ticket: { key: action.key, summary: row?.summary ?? '', status: 'Dev Review' } });
-      break;
-    }
-    case 'request-qa': {
-      const row = local.home?.work.find((r) => r.key === action.key);
-      requestQa({ ticket: { key: action.key, summary: row?.summary ?? '', status: 'Dev Review' } });
+      sendToQa({ ticket: { key: action.key, summary: row?.summary ?? '' } });
       break;
     }
     case 'build': {
@@ -380,28 +375,6 @@ function ticketBuildsBlock(latest, lookupError) {
     : 'No dev build has been posted to this ticket yet. Build it first.');
 }
 
-async function sendToQa(pr) {
-  const ticket = pr.ticket;
-  let builds = [];
-  let lookupError = null;
-  try { builds = (await api(`/api/lookup/${ticket.key}`)).jiraBuilds; } catch (err) { lookupError = err; }
-  const latest = latestBuildPerTarget(builds);
-  const ok = await confirmSheet({
-    title: 'Send to QA',
-    body: [
-      el('p', {}, el('strong', {}, ticket.key), ` ${ticket.summary}`),
-      el('p', { class: 'transition' },
-        el('span', { class: 'chip blue' }, ticket.status), ' → ', el('span', { class: 'chip orange' }, 'QA Review')),
-      ticketBuildsBlock(latest, lookupError),
-      el('p', { class: 'muted' }, 'Only the status changes. No comment is posted.'),
-    ],
-    confirmLabel: 'Send to QA',
-    confirmDisabled: !latest.size,
-    onConfirm: () => post(`/api/tickets/${ticket.key}/qa`),
-  });
-  if (ok) { toast(`${ticket.key} moved to QA Review`, 'ok'); ctx?.refresh(); }
-}
-
 // ---------- Teams sheets (Request Review, Request QA Review) ----------
 
 // GET a sheet's details; on failure shows a toast and returns null.
@@ -698,59 +671,132 @@ async function requestPrReview(key) {
 function qaFootnote(key, info, cooling) {
   if (cooling) return cooldownNote(key, info.cooldownUntil);
   const { mention, name } = info.tag;
+  const where = `Move @${name} anywhere in the message, or delete it to skip the tag.`;
   return mention
-    ? `Posts to the QA channel and @mentions ${name}. The ticket status doesn't change.`
-    : `Posts to the QA channel. ${name} shows as bold text until its tag ID is added in Settings. `
-      + 'The ticket status doesn\'t change.';
+    ? `Posts to the QA channel and @mentions ${name}. ${where}`
+    : `Posts to the QA channel. ${name} shows as bold text until its tag ID is added in Settings. ${where}`;
+}
+
+// "@Tag" in the text shows where the tag lands: highlighted like a mention, or bold without a tag ID.
+function markTag(node, name, mention) {
+  const at = `@${name}`;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  const hits = [];
+  while (walker.nextNode()) if (walker.currentNode.nodeValue.includes(at)) hits.push(walker.currentNode);
+  for (const text of hits) {
+    const parts = text.nodeValue.split(at);
+    text.replaceWith(...parts.flatMap((part, i) => (i ? [mention ? el('span', { class: 'tc-at' }, name) : el('strong', {}, name), part] : [part])));
+  }
+  return node;
 }
 
 function paintQaPreview(preview, info, text) {
-  preview.replaceChildren(
-    el('div', { class: 'tc-title' }, info.title),
-    ...messageBlocks(text),
-    el('p', {}, info.tag.mention ? el('span', { class: 'tc-at' }, info.tag.name) : el('strong', {}, info.tag.name)));
+  preview.replaceChildren(el('div', { class: 'tc-title' }, info.title), ...messageBlocks(text));
+  markTag(preview, info.tag.name, info.tag.mention);
 }
 
-// Tell QA the ticket is ready for PRE-QA, in the team's format. Separate from Send to QA for now.
-async function requestQa(pr) {
-  const key = pr.ticket.key;
+// Send to QA: one sheet, two independent parts: move the ticket to QA Review, and post to the QA channel.
+// Each part has its own switch, so skipping one never skips the other, and nothing happens until Confirm.
+// Once the ticket is in QA Review, only the message is left.
+async function sendToQa(pr) {
+  const { key } = pr.ticket;
   const info = await loadSheetInfo(`/api/tickets/${key}/qa-request`);
   if (!info) return;
+  const canMove = info.status === 'Dev Review';
+  let latest = new Map();
+  let lookupError = null;
+  if (canMove) {
+    try { latest = latestBuildPerTarget((await api(`/api/lookup/${key}`)).jiraBuilds); } catch (err) { lookupError = err; }
+  }
   const cooling = isCoolingDown(info);
-  let sentTest = false;
   const test = testSwitch(info, 'Test chat not set up');
   const preview = teamsCard();
   const editor = messageEditor(info.defaultText, () => paintQaPreview(preview, info, editor.area.value));
   editor.paint();
   const anyway = cooling ? anywayBox() : null;
-  const ready = info.configured && info.ready;
-  const ok = await confirmSheet({
-    title: 'Request QA Review on Teams',
+  const canMessage = info.ready && (info.configured || info.testConfigured);
+  const moveBox = el('input', { type: 'checkbox', role: 'switch', checked: canMove && latest.size > 0, disabled: !canMove || !latest.size });
+  const sendBox = el('input', { type: 'checkbox', role: 'switch', checked: canMessage, disabled: !canMessage });
+  const moveText = el('span', {}, 'Move to QA Review');
+  const sendText = el('span', {}, 'Post to the QA channel');
+  const message = el('fieldset', { class: 'qa-message' },
+    el('legend', { class: 'sr-only' }, 'QA channel message'),
+    el('div', { class: 'msg-split' }, el('label', { class: 'field-label' }, 'Message', editor.node), preview),
+    info.configured ? test.row : el('p', { class: 'muted' }, 'The QA channel isn\'t set up. Add its webhook in Settings, under Teams.'),
+    el('p', { class: 'footnote' }, qaFootnote(key, info, cooling)),
+    anyway && anywayRow(anyway));
+  const done = { move: false, send: false };
+  let sentTest = false;
+
+  const wantMove = () => moveBox.checked && !done.move;
+  const wantSend = () => sendBox.checked && !done.send;
+  const sendBlocked = () => blankText(editor.area)
+    || (test.box.checked ? !info.testConfigured : !info.configured || (cooling && !anyway.checked));
+  const sendWord = () => (test.box.checked ? 'Send Test' : anyway?.checked ? 'Send Again' : 'Send');
+  const confirmText = () => {
+    if (wantMove() && wantSend()) return `Move and ${sendWord()}`;
+    if (wantMove()) return 'Move to QA Review';
+    if (wantSend()) return test.box.checked || anyway?.checked ? sendWord() : 'Send to QA Channel';
+    return 'Send to QA';
+  };
+
+  await confirmSheet({
+    title: canMove ? 'Send to QA' : 'Message QA',
     body: [
-      el('div', { class: 'msg-split' }, el('label', { class: 'field-label' }, 'Message', editor.node), preview),
-      !info.ready && el('p', { class: 'banner error' }, info.reason),
-      info.configured
-        ? test.row
-        : el('p', { class: 'muted' }, 'The QA channel isn\'t set up. Add its webhook in Settings, under Teams.'),
-      el('p', { class: 'footnote' }, qaFootnote(key, info, cooling)),
-      anyway && anywayRow(anyway),
+      el('p', {}, el('strong', {}, key), ` ${info.title}`),
+      canMove
+        ? el('div', { class: 'qa-part' },
+          el('label', { class: 'switch' }, moveBox, moveText),
+          el('p', { class: 'transition' },
+            el('span', { class: 'chip blue' }, 'Dev Review'), ' → ', el('span', { class: 'chip orange' }, 'QA Review')),
+          ticketBuildsBlock(latest, lookupError),
+          el('p', { class: 'footnote' }, 'Only the status changes. No comment is posted.'))
+        : el('p', { class: 'muted' }, `Already in ${info.status}. Only the message is left.`),
+      el('div', { class: 'qa-part' },
+        el('label', { class: 'switch' }, sendBox, sendText),
+        !info.ready && el('p', { class: 'banner error' }, info.reason),
+        message),
     ].filter(Boolean),
-    confirmLabel: info.testConfigured ? 'Send Test' : 'Send to QA Channel',
-    confirmDisabled: !info.ready || (!info.configured && !info.testConfigured),
-    onReady: syncSendButton({
-      testBox: test.box, liveLabel: 'Send to QA Channel', anyway, watch: [editor.area],
-      isDisabled: (testing) => !info.ready || blankText(editor.area)
-        || (testing ? !info.testConfigured : !ready || (cooling && !anyway.checked)),
-    }),
+    confirmLabel: confirmText(),
+    onReady: (okBtn) => {
+      const sync = () => {
+        message.disabled = !wantSend();
+        okBtn.textContent = confirmText();
+        okBtn.disabled = (!wantMove() && !wantSend()) || (wantSend() && sendBlocked());
+      };
+      okBtn.form.addEventListener('change', sync);
+      okBtn.form.addEventListener('input', sync);
+      sync();
+    },
+    // Both parts run even if one fails. A part that worked is marked done, so trying again only redoes the other.
     onConfirm: async () => {
-      sentTest = test.box.checked;
-      await post(`/api/tickets/${key}/qa-request`, { test: sentTest, text: editor.area.value, force: Boolean(!sentTest && anyway?.checked) });
+      const failed = [];
+      if (wantMove()) {
+        try {
+          await post(`/api/tickets/${key}/qa`);
+          done.move = true;
+          moveBox.disabled = true;
+          moveText.textContent = 'Moved to QA Review';
+        } catch (err) { failed.push(`Couldn't move it: ${err.message}`); }
+      }
+      if (wantSend()) {
+        try {
+          sentTest = test.box.checked;
+          await post(`/api/tickets/${key}/qa-request`, { test: sentTest, text: editor.area.value, force: Boolean(!sentTest && anyway?.checked) });
+          done.send = true;
+          sendBox.disabled = true;
+          sendText.textContent = sentTest ? 'Sent to your test chat' : 'Posted to the QA channel';
+        } catch (err) { failed.push(`Couldn't send the message: ${err.message}`); }
+      }
+      if (failed.length) throw new Error(failed.join(' '));
     },
   });
-  if (!ok) return;
-  toast(sentTest
-    ? 'Sent to your test chat. Open Request QA Review again and turn off the test switch to send to QA.'
-    : `QA review requested for ${key}`);
+  if (done.move) { toast(`${key} moved to QA Review`, 'ok'); ctx?.refresh(); }
+  if (done.send) {
+    toast(sentTest
+      ? 'Sent to your test chat. Open Send to QA again and turn off the test switch to post to QA.'
+      : `QA channel told about ${key}`, 'ok');
+  }
 }
 
 // ---------- build sheet ----------
@@ -1006,10 +1052,11 @@ function behindNote(pr) {
 }
 
 function prActions(pr) {
-  const canQa = pr.ticket?.status === 'Dev Review' && pr.approved; // QA waits for GitHub's Approved, like Build
+  // Send to QA waits for GitHub's Approved, like Build. In QA Review it stays, for messaging QA again.
+  const inQa = pr.ticket?.status === 'QA Review';
+  const canQa = inQa || (pr.ticket?.status === 'Dev Review' && pr.approved);
   return el('div', { class: 'row-actions' },
-    canQa && smallButton(() => sendToQa(pr), 'Send to QA'),
-    canQa && smallButton(() => requestQa(pr), icon('team'), 'Request QA Review'),
+    canQa && smallButton(() => sendToQa(pr), icon('team'), inQa ? 'Message QA' : 'Send to QA'),
     pr.author === ctx.shared.login && !pr.isDraft
       && smallButton(() => (pr.ticketKey ? requestPrReview(pr.ticketKey) : requestReview(pr)), icon('team'), 'Request PR Review'),
     pr.author === ctx.shared.login && pr.ticketKey && smallButton(() => runLocal('update', pr.ticketKey), 'Update from Develop'),
@@ -1203,7 +1250,7 @@ function homeSections() {
 
 // The ticket panel can open on any page, so its QA buttons are wired when this module loads, not when Home first shows.
 registerTicketActions({
-  requestQa: (ticket) => requestQa({ ticket }), sendToQa: (ticket) => sendToQa({ ticket }), requestPrReview: (ticket) => requestPrReview(ticket.key),
+  sendToQa: (ticket) => sendToQa({ ticket }), requestPrReview: (ticket) => requestPrReview(ticket.key),
 });
 
 export default {

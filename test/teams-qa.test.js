@@ -17,8 +17,7 @@ test('QA card: bold summary, link sentence, and a real tag mention when the tag 
   const content = card.attachments[0].content;
   assert.deepEqual(content.body.map((b) => b.text), [
     'CSSO | Permission \\*Guards\\*',
-    `[${TICKET_URL}](${TICKET_URL}) is ready for PRE-QA. Builds are mentioned in the ticket.`,
-    '<at>MobileHardware_QA</at>',
+    `[${TICKET_URL}](${TICKET_URL}) is ready for PRE-QA. Builds are mentioned in the ticket.\n\n<at>MobileHardware_QA</at>`,
   ]);
   assert.equal(content.body[0].weight, 'Bolder');
   assert.deepEqual(content.msteams.entities, [{
@@ -31,7 +30,7 @@ test('QA card: bold summary, link sentence, and a real tag mention when the tag 
 test('QA card: without a tag id the tag is bold text and nothing is mentioned', () => {
   const tag = { name: 'MobileHardware_QA', id: '' };
   const content = buildQaCard({ summary: 'S', ticketUrl: TICKET_URL, tag }).attachments[0].content;
-  assert.equal(content.body.at(-1).text, '**MobileHardware\\_QA**');
+  assert.match(content.body.at(-1).text, /\*\*MobileHardware\\_QA\*\*$/);
   assert.deepEqual(content.msteams.entities, []);
 });
 
@@ -61,7 +60,7 @@ async function boot(opts = {}) {
     settings, jira, teamsQa, teamsTest,
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  return { server, req: request(server.address().port), sent };
+  return { server, req: request(server.address().port), sent, settings };
 }
 
 test('preview returns title, link, tag, and which webhooks are set', async () => {
@@ -71,8 +70,8 @@ test('preview returns title, link, tag, and which webhooks are set', async () =>
     configured: true, testConfigured: true,
     key: 'TCPMOB-1768', title: 'CSSO | Permission Guards', ticketUrl: TICKET_URL,
     tag: { name: 'MobileHardware_QA', mention: false },
-    ready: true, reason: null, cooldownUntil: null,
-    defaultText: `[${TICKET_URL}](${TICKET_URL}) is ready for PRE-QA. Builds are mentioned in the ticket.`,
+    status: 'Dev Review', ready: true, reason: null, cooldownUntil: null,
+    defaultText: `[${TICKET_URL}](${TICKET_URL}) is ready for PRE-QA. Builds are mentioned in the ticket.\n\n@MobileHardware_QA`,
   });
   server.close();
 });
@@ -95,7 +94,7 @@ test('only Dev Review tickets with a dev build can be sent', async () => {
   let { server, req } = await boot({ status: 'In Progress' });
   let response = await req('POST', QA, { test: true });
   assert.equal(response.status, 409);
-  assert.equal(response.json().error, 'TCPMOB-1768 is In Progress, not Dev Review.');
+  assert.equal(response.json().error, 'TCPMOB-1768 is In Progress, not Dev Review or QA Review.');
   server.close();
   ({ server, req } = await boot({ builds: false }));
   response = await req('POST', QA, { test: true });
@@ -124,11 +123,11 @@ test('settings: QA webhook is a masked secret; tag name and id are validated', (
   assert.throws(() => settings.update({ teams: { qaTagName: '<script>' } }), { status: 400 });
 });
 
-test('QA card uses given text, then the tag', () => {
+test('QA card uses given text as typed', () => {
   const tag = { name: 'MobileHardware_QA', id: 'MjQzMmYw' };
-  const content = buildQaCard({ summary: 'S', ticketUrl: TICKET_URL, tag, text: 'Ready, **build 412**' }).attachments[0].content;
-  assert.deepEqual(content.body.map((b) => b.text), ['S', 'Ready, **build 412**', '<at>MobileHardware_QA</at>']);
-  assert.equal(defaultQaText({ ticketUrl: 'u' }), '[u](u) is ready for PRE-QA. Builds are mentioned in the ticket.');
+  const content = buildQaCard({ summary: 'S', ticketUrl: TICKET_URL, tag, text: 'Ready, **build 412** @MobileHardware_QA' }).attachments[0].content;
+  assert.deepEqual(content.body.map((b) => b.text), ['S', 'Ready, **build 412** <at>MobileHardware_QA</at>']);
+  assert.equal(defaultQaText({ ticketUrl: 'u' }), '[u](u) is ready for PRE-QA. Builds are mentioned in the ticket.\n\n@MobileHardware_QA');
 });
 
 test('QA send uses edited text, rejects empty text, and force resends within the cooldown', async () => {
@@ -140,5 +139,38 @@ test('QA send uses edited text, rejects empty text, and force resends within the
   assert.equal((await req('POST', QA, { force: true })).status, 200);
   assert.equal(sent.qa.length, 2);
   assert.equal((await req('POST', QA, {})).status, 429);
+  server.close();
+});
+
+test('a ticket already in QA Review can message QA again; preview reports the status', async () => {
+  const { server, req, sent } = await boot({ status: 'QA Review' });
+  const preview = (await req('GET', QA)).json();
+  assert.equal(preview.ready, true);
+  assert.equal(preview.status, 'QA Review');
+  assert.equal((await req('POST', QA, { test: true })).status, 200);
+  assert.equal(sent.test.length, 1);
+  server.close();
+});
+
+test('QA tag goes wherever @Tag sits in the text, as a real mention when the id is known', () => {
+  const text = 'Hey @MobileHardware_QA, [t](u) is ready. Thanks';
+  const withId = buildQaCard({ summary: 'S', ticketUrl: TICKET_URL, tag: { name: 'MobileHardware_QA', id: 'MjQz' }, text }).attachments[0].content;
+  assert.deepEqual(withId.body.map((b) => b.text), ['S', 'Hey <at>MobileHardware_QA</at>, [t](u) is ready. Thanks']);
+  assert.equal(withId.msteams.entities.length, 1);
+  const bold = buildQaCard({ summary: 'S', ticketUrl: TICKET_URL, tag: { name: 'MobileHardware_QA', id: '' }, text }).attachments[0].content;
+  assert.equal(bold.body[1].text, 'Hey **MobileHardware\\_QA**, [t](u) is ready. Thanks');
+  const none = buildQaCard({ summary: 'S', ticketUrl: TICKET_URL, tag: { name: 'MobileHardware_QA', id: 'MjQz' }, text: 'No tag here' }).attachments[0].content;
+  assert.deepEqual(none.body.map((b) => b.text), ['S', 'No tag here']);
+  assert.deepEqual(none.msteams.entities, [], 'tag removed from the text: nobody is mentioned');
+});
+
+test('custom QA and review templates from Settings fill their placeholders', async () => {
+  const { server, req, settings } = await boot();
+  settings.update({ teams: { qaTemplate: 'Hi {qaTag}! {ticket} at {ticketUrl}' } });
+  assert.equal((await req('GET', QA)).json().defaultText, `Hi @MobileHardware_QA! TCPMOB-1768 at ${TICKET_URL}`);
+  settings.update({ teams: { qaTemplate: null } });
+  assert.match((await req('GET', QA)).json().defaultText, /is ready for PRE-QA[\s\S]*@MobileHardware_QA$/);
+  assert.throws(() => settings.update({ teams: { reviewTemplate: 'x'.repeat(2001) } }), { status: 400 });
+  assert.match(settings.publicView().teams.reviewTemplate, /^Hey Team!\n\nTicket: \[\{ticket\}\]\(\{ticketUrl\}\)/);
   server.close();
 });

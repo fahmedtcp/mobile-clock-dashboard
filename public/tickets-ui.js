@@ -14,7 +14,7 @@ const knownBuild = (key) => {
   return hit && Date.now() - hit.at <= BUILD_TTL_MS ? hit : null;
 };
 let panel = null;         // { aside, body, trigger, key }
-let actions = {};         // { requestQa(ticket), sendToQa(ticket) }, registered by Home
+let actions = {};         // { sendToQa(ticket), requestPrReview(ticket) }, registered by Home
 
 export const registerTicketActions = (handlers) => { actions = handlers; };
 
@@ -105,10 +105,9 @@ function actionsRow(data) {
   const ticket = { key: data.ticket.key, summary: data.ticket.summary, status: data.ticket.status };
   return el('div', { class: 'tp-actions' },
     ext(data.ticket.url, el('span', { class: 'btn btn-small btn-filled' }, 'Open in Jira')),
-    data.canSendToQa && actions.requestQa
-      && el('button', { type: 'button', class: 'btn btn-small', onclick: () => actions.requestQa(ticket) }, icon('team'), 'Request QA Review'),
     data.canSendToQa && actions.sendToQa
-      && el('button', { type: 'button', class: 'btn btn-small', onclick: () => actions.sendToQa(ticket) }, 'Send to QA'),
+      && el('button', { type: 'button', class: 'btn btn-small', onclick: () => actions.sendToQa(ticket) },
+        icon('team'), ticket.status === 'QA Review' ? 'Message QA' : 'Send to QA'),
     el('button', { type: 'button', class: 'btn btn-small', onclick: () => { closeTicketPanel(); runLocal('update', ticket.key); } }, 'Update from Develop'),
     el('button', { type: 'button', class: 'btn btn-small', onclick: () => { closeTicketPanel(); runLocal('tests', ticket.key); } }, 'Run Tests'),
     ticket.status === 'In Progress' && actions.requestPrReview

@@ -19,6 +19,7 @@ import { HttpError, readJson, id, RAW } from './lib/http.js';
 import { createJira, JiraError } from './lib/jira.js';
 import { createBranchList } from './lib/ghdata.js';
 import * as tickets from './lib/tickets.js';
+import * as actionsCache from './lib/actions-cache.js';
 import * as alerts from './lib/alerts.js';
 import * as release from './lib/release.js';
 import * as testhealth from './lib/testhealth.js';
@@ -72,7 +73,7 @@ async function serveStatic(req, res) {
 }
 
 // Feature modules each export routes(ctx); later tasks append to this list.
-const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel, home, prRequest, localRepo, buildQueue];
+const FEATURE_MODULES = [tickets, alerts, release, testhealth, reviews, tsbudget, simulator, time, teams, ticketPanel, home, prRequest, localRepo, buildQueue, actionsCache];
 
 // No reminder until workday hours are set: there's nothing to confirm yet.
 export const reminderSetting = (time) => (time.reminderOn && time.dayHours != null ? time.reminderAt : 'off');

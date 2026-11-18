@@ -233,6 +233,21 @@ function textField(row, name, { label, value, type = 'text', placeholder = '' })
   return el('label', { class: 'field-label' }, label, input);
 }
 
+// A default Teams message. Reset to Default drops the saved one, so the built-in wording comes back on Save.
+function templateField(name, { label, value, custom, help }) {
+  const resetting = drafts.teams?.[name] === null;
+  const area = el('textarea', { class: 'field msg-text', rows: 11, maxlength: 2000, spellcheck: 'true', 'aria-label': label });
+  area.value = typeof drafts.teams?.[name] === 'string' ? drafts.teams[name] : value;
+  area.disabled = resetting;
+  area.addEventListener('input', () => setDraft('teams', name, area.value.trim() ? area.value : undefined));
+  return el('div', { class: 'field-label' }, label, area,
+    el('span', { class: 'footnote' }, resetting ? 'The built-in message comes back when you save.' : help),
+    (custom || resetting) && el('div', {},
+      resetting
+        ? smallButton('Undo', () => { delete drafts.teams[name]; render(); })
+        : smallButton('Reset to Default', () => { setDraft('teams', name, null); render(); })));
+}
+
 // A key field: saved keys show as ••••last4 with Replace and Remove; typing replaces.
 function secretField(row, name, { label, saved }) {
   const replacing = drafts[row]?.[name] !== undefined && drafts[row][name] !== null;
@@ -343,6 +358,14 @@ function teamsRow() {
         placeholder: 'Leave empty to show the tag as bold text',
       }),
       secretField('teams', 'testWebhookUrl', { label: 'Test chat webhook', saved: teams.testWebhookUrl }),
+      templateField('reviewTemplate', {
+        label: 'Default PR review message', value: teams.reviewTemplate, custom: teams.sources.reviewTemplate === 'settings',
+        help: 'Fills in {ticket}, {ticketUrl}, {pr}, and {prUrl}. People are @mentioned below the message.',
+      }),
+      templateField('qaTemplate', {
+        label: 'Default QA message', value: teams.qaTemplate, custom: teams.sources.qaTemplate === 'settings',
+        help: 'Fills in {ticket}, {ticketUrl}, and {qaTag}. Put {qaTag} where the QA tag should go.',
+      }),
     ]),
   });
 }

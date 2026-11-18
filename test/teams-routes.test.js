@@ -158,3 +158,12 @@ test('a person added just for this message is looked up, mentioned, and only for
   const preview = (await req('GET', '/api/prs/6/review-request')).json();
   assert.ok(!preview.people.some((p) => p.login === 'raja-tcp'), 'nothing is remembered');
 });
+
+test('a custom review template from Settings is the default text', async () => {
+  gh.pr = { ...pr, number: 7 };
+  server.ctx.settings.update({ teams: { reviewTemplate: 'Review {ticket} ({ticketUrl}) PR #{pr} {prUrl}' } });
+  try {
+    const preview = (await req('GET', '/api/prs/7/review-request')).json();
+    assert.match(preview.defaultText, /^Review TCPMOB-1735 \(https:\/\/\S+TCPMOB-1735\) PR #7 \S+$/);
+  } finally { server.ctx.settings.update({ teams: { reviewTemplate: null } }); }
+});

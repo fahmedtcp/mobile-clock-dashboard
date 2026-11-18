@@ -19,6 +19,7 @@ function fakeJira() {
       summary: 'CSSO guards', status: { name: 'Dev Review' }, assignee: { displayName: 'Foad Ahmed' },
       fixVersions: [{ name: 'Mobile 42' }], issuetype: { name: 'Bug' }, description: adf(`Check roles ${MARKUP} too`) } },
     'TCPMOB-2': { key: 'TCPMOB-2', fields: { summary: 'No build', status: { name: 'Dev Review' }, issuetype: { name: 'Story' } } },
+    'TCPMOB-3': { key: 'TCPMOB-3', fields: { summary: 'Moved', status: { name: 'QA Review' }, issuetype: { name: 'Story' } } },
   };
   const comments = {
     'TCPMOB-1': [
@@ -29,6 +30,7 @@ function fakeJira() {
       { author: 'Pat', created: '2026-11-10T11:00:00Z', text: 'Looks good' },
     ],
     'TCPMOB-2': [],
+    'TCPMOB-3': [buildComment(415, 'Mobile Clock Android', 'firebase distribution', '2026-11-10T10:00:00Z')],
   };
   return {
     calls,
@@ -199,5 +201,11 @@ test('panel offers QA only once a PR for the ticket is approved', async () => {
   const gh = { json: async (args) => (args.includes('pr') ? unapproved : []), run: async () => '' };
   const { server, req } = await bootWith({ gh, peek: () => null });
   assert.equal((await req('GET', '/api/tickets/TCPMOB-1/panel')).json().canSendToQa, false);
+  server.close();
+});
+
+test('panel keeps Send to QA after the ticket moved to QA Review, for messaging QA again', async () => {
+  const { server, req } = await boot();
+  assert.equal((await req('GET', '/api/tickets/TCPMOB-3/panel')).json().canSendToQa, true);
   server.close();
 });

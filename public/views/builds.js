@@ -210,6 +210,67 @@ function paintHistory() {
   loadEveryone();
 }
 
+// ---------- Actions cache ----------
+
+const CACHE_STALE_MS = 5 * 60000;
+let cache = { at: 0, data: null, error: null, loading: false };
+const size = (bytes) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`);
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+function loadCache(force = false) {
+  if (cache.loading || (!force && Date.now() - cache.at < CACHE_STALE_MS)) return;
+  cache.loading = true;
+  api('/api/actions-cache').then(
+    (data) => { cache = { at: Date.now(), data, error: null, loading: false }; },
+    (err) => { cache = { ...cache, at: Date.now(), error: err, loading: false }; },
+  ).then(paintCache);
+}
+
+// Clearing is repo-wide: every teammate's next build on that branch rebuilds its cache from scratch.
+async function clearCache(row) {
+  const what = row ? `the ${plural(row.count, 'cache')} for ${row.branch}` : `all ${plural(cache.data.count, 'cache')} in the repo`;
+  let result = null;
+  const ok = await confirmSheet({
+    title: row ? 'Clear Branch Cache' : 'Clear All Caches',
+    body: [
+      el('p', {}, `Deletes ${what} (${size(row ? row.bytes : cache.data.bytes)}) on GitHub.`),
+      el('p', { class: 'muted' }, 'The next build on each branch rebuilds its cache, so it runs slower once. This affects everyone using the repo.'),
+    ],
+    confirmLabel: row ? 'Clear Branch' : 'Clear All',
+    danger: true,
+    onConfirm: async () => {
+      const query = row ? `?ref=${encodeURIComponent(row.ref)}` : '';
+      result = await api(`/api/actions-cache${query}`, { method: 'DELETE' });
+    },
+  });
+  if (!ok) return;
+  toast(result.failed ? `Cleared ${result.deleted}. ${result.failed} couldn't be deleted.` : `Cleared ${plural(result.deleted, 'cache')}`,
+    result.failed ? 'bad' : 'ok');
+  loadCache(true);
+}
+
+function cacheRow(row) {
+  return el('li', {},
+    el('div', { class: 'row' },
+      glyph('release', 'gray'),
+      el('div', { class: 'row-body' },
+        el('div', { class: 'row-title mono' }, row.branch),
+        el('div', { class: 'row-sub' }, el('span', {}, plural(row.count, 'cache')), sep(),
+          el('span', { class: 'num' }, size(row.bytes)), sep(), el('span', {}, `Used ${ago(row.lastAccessedAt)}`))),
+      el('div', { class: 'row-trail' }, smallButton(() => clearCache(row), 'Clear', 'btn-danger'))));
+}
+
+function paintCache() {
+  const list = $('build-cache');
+  if (!list) return;
+  showError($('build-cache-error'), cache.error);
+  const { data } = cache;
+  $('build-cache-all').hidden = !data?.count;
+  $('build-cache-total').textContent = data ? `${plural(data.count, 'cache')} · ${size(data.bytes)}` : '';
+  if (!data) { list.replaceChildren(...(cache.error ? [] : skeleton(2))); return; }
+  list.replaceChildren(...(data.refs.length ? data.refs.map(cacheRow) : [empty('check', 'No caches.', '', 'gray')]));
+}
+
 // ---------- render ----------
 
 function weekLine(week) {
@@ -242,6 +303,7 @@ function render(shared, errors = {}) {
   $('build-running').replaceChildren(...(o.running.length ? o.running.map(runningRow) : [empty('check', 'No builds running.', '', 'gray')]));
   paintHistory();
   $('builds-week').textContent = weekLine(o.week);
+  if (isShown()) loadCache();
   sectionFreshness('build-running', { at: shared.loadedAt.overview, intervalMs: POLL_MS, error: errors.overview, onRefresh: ctx.refresh });
   tick();
 }
@@ -281,7 +343,11 @@ export default {
       section('build-waiting', 'Waiting to Start', ['clock', 'orange']),
       section('build-running', 'Running Now', ['bolt', 'orange']),
       section('build-history', 'Build History', ['hammer', 'indigo'], el('div', { class: 'history-controls' }, scopeControl, filterControl)),
-      el('p', { id: 'builds-week', class: 'footnote builds-week' }));
+      el('p', { id: 'builds-week', class: 'footnote builds-week' }),
+      section('build-cache', 'Actions Cache', ['release', 'gray'],
+        el('div', { class: 'history-controls' },
+          el('span', { id: 'build-cache-total', class: 'footnote' }),
+          el('button', { id: 'build-cache-all', class: 'btn btn-small btn-danger', type: 'button', hidden: true, onclick: () => clearCache(null) }, 'Clear All'))));
     $('build-waiting-section').hidden = true;
     render(ctx.shared, ctx.errors);
     setInterval(tick, 1000);

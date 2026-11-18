@@ -318,7 +318,7 @@ main { --gutter: clamp(16px, 4vw, 44px); min-width: 0; width: min(100%, 1160px);
 }
 .section-head h3 { font-size: .9375rem; }
 .section-title { display: flex; align-items: center; gap: 10px; }
-.history-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.history-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .hint { color: var(--label-2); font-size: .8125rem; }
 
 /* ---------- Today ---------- */
@@ -536,6 +536,9 @@ ul.plain { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; fon
 .build-pill .bn { font-size: 1.25rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .build-pill .bl { color: var(--label-2); font-size: .75rem; font-weight: 600; }
 .transition { display: flex; align-items: center; gap: 8px; }
+.qa-part { display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid var(--separator); }
+.qa-message { border: 0; margin: 0; padding: 0; min-width: 0; display: grid; gap: 10px; transition: opacity 200ms ease; }
+.qa-message:disabled { opacity: .4; }
 
 /* ---------- sheets ---------- */
 

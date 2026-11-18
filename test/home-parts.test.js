@@ -119,7 +119,7 @@ test('unpushed branches parse ahead counts and skip non-ticket, gone, and stale 
 
 test('wrap checklist: push items copy the command, hours done when confirmed, ready-for-QA asks', () => {
   const unpushed = [{ branch: 'TCPMOB-1482-load-more', key: KEY, ahead: 2 }];
-  const ready = row({ key: 'TCPMOB-1768', blocker: { kind: 'ready-for-qa', text: 't' }, action: { kind: 'request-qa', label: 'Request QA', key: 'TCPMOB-1768' } });
+  const ready = row({ key: 'TCPMOB-1768', blocker: { kind: 'ready-for-qa', text: 't' }, action: { kind: 'send-to-qa', label: 'Send to QA', key: 'TCPMOB-1768' } });
   const items = wrapChecklist({ unpushed, hoursPending: true, rows: [ready, row()] });
   assert.deepEqual(items.map((i) => [i.title, i.done]), [
     [`Push ${KEY} and open the PR`, false],

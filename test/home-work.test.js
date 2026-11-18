@@ -181,3 +181,23 @@ test('a ticket in QA that already has builds can get a new one, once the PR is a
   assert.deepEqual(qa(true).secondary, { kind: 'build', label: 'New Build', pr: 1101, keys: null });
   assert.equal(qa(false).secondary, null);
 });
+
+test('in QA Review with a build, the row offers Message QA; New Build stays secondary', () => {
+  const row = one({ tickets: [ticket({ status: 'QA Review' })], prs: [pr({ approved: true })], builds: { [KEY]: [build('412', 'Android'), build('409', 'iOS')] } });
+  assert.deepEqual(row.action, { kind: 'send-to-qa', label: 'Message QA', key: KEY });
+  assert.deepEqual(row.secondary, { kind: 'build', label: 'New Build', pr: 1101, keys: null });
+  const missing = one({
+    tickets: [ticket({ status: 'QA Review', assignee: { accountId: 'sana', name: 'Sana Ali' } })],
+    prs: [pr({ approved: true })], builds: { [KEY]: [build('412', 'Android')] },
+  });
+  assert.equal(missing.action.kind, 'build');
+  assert.deepEqual(missing.secondary, { kind: 'send-to-qa', label: 'Message QA', key: KEY });
+  const noBuild = one({ tickets: [ticket({ status: 'QA Review' })] });
+  assert.equal(noBuild.action.kind, 'open-ticket', 'no dev build: nothing to tell QA about');
+});
+
+test('ready for QA uses the combined Send to QA sheet', () => {
+  const kinds = workRows(input({ tickets: [ticket({ status: 'Dev Review' })], prs: [pr({ approved: true })], builds: { [KEY]: [build('412', 'Android')] } }))
+    .flatMap((r) => [r.action?.kind, r.secondary?.kind]);
+  assert.ok(!kinds.includes('request-qa'), kinds.join(','));
+});
