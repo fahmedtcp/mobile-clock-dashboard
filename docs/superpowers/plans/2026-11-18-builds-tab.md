@@ -354,13 +354,21 @@
     - `undefined` gives the fallback
     - Otherwise, the trimmed text must be 1 to 2,000 characters, or it's an `HttpError(400, 'Message text can't be empty.')` or `HttpError(400, 'Keep the message under 2,000 characters.')`
   - Preview responses add `defaultText`. Send bodies take `text` and no longer take `note`.
+  - Send bodies also take `force: true`, which skips `cooldown.assertReady`. `deliver` still calls `mark`, so the timer restarts.
+
+**Resend override (spec section 5):**
+- While cooling down, both sheets show the cooldown note plus an unchecked **Send Anyway** checkbox
+- Checking it enables Send, renames it "Send Again," and sends `force: true`
+- Test sends are unchanged
 
 - [ ] **Step 1: Write the failing tests:**
   - `buildCard uses given text unescaped and keeps mentions after it`: `text: '**Hi** [x](https://e.x)'` gives `body[1].text === '**Hi** [x](https://e.x)'`, the last block is the mention footer, and the entities are unchanged
   - `buildCard default text matches the old card`: compare the joined text against the current fixed lines
   - `title stays escaped`: summary `'a*b'` gives `'a\\*b'`
   - `qa card uses text then tag`
-  - Routes: `send with empty text is 400`, `send with 2001 chars is 400`, `preview returns defaultText`, `send without text uses default`
+  - Routes:
+    - `second send within cooldown is 429; with force: true it sends and restarts the timer` (for both review and QA)
+    - `send with empty text is 400`, `send with 2001 chars is 400`, `preview returns defaultText`, `send without text uses default`
 - [ ] **Step 2: Run the tests and confirm they fail.** Run: `DASHBOARD_DATA_DIR=$(mktemp -d) TIME_REMINDER=off node --test test/teams*.test.js`. Expected: FAIL.
 - [ ] **Step 3: Implement the server side.**
 - [ ] **Step 4: Implement the sheets.**

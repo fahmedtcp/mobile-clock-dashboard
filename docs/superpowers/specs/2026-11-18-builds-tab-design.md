@@ -155,6 +155,13 @@ This Week: 9 builds · 7 passed · 2 retries saved · iOS median 38m
 - The preview repaints on every keystroke. A **Reset to Default** link restores the default wording.
 - **Server:** `buildCard` and `buildQaCard` accept an optional `text`. When it's given, it replaces the fixed body lines ("Hey Team!" through "Thanks" for review; the "ready for PRE-QA" line for QA). The default text comes from the existing preview endpoints as `defaultText`. The existing "note" field is folded into this text box and removed.
 
+### 5. Override the Teams Resend Timer
+
+- Today a real send blocks another send for the same PR or ticket until the cooldown ends (`createCooldown` in `lib/teams.js`, 429 "Already sent…").
+- While the timer is running, both sheets show the existing cooldown note plus a **Send Anyway** checkbox. Checking it enables Send and changes its label to "Send Again."
+- The send body takes `force: true`, which skips `assertReady`. The send still restarts the timer, so a double click can't post twice.
+- The checkbox starts unchecked every time, so the guard still protects against an accidental resend
+
 ## Visual Design (Apple Design Guidance)
 
 The dashboard already follows Apple patterns: system fonts, translucent sticky chrome (`backdrop-filter`), `:active` press scale, sheets with `@starting-style`, and `tabular-nums`. The new UI reuses those tokens and adds the following. CSS only, with no new libraries.
