@@ -35,6 +35,7 @@ import * as buildQueue from './lib/build-queue.js';
 import { createGh, GhError } from './lib/gh.js';
 import { getPr, createBehindCache, updateBranch } from './lib/prs.js';
 import { createTracker, BuildRequestError } from './lib/builds.js';
+import { buildOverview } from './lib/build-overview.js';
 import { listRuns, rerunFailed, cancelRun, statusStrip, getLogin } from './lib/runs.js';
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
@@ -191,6 +192,9 @@ function coreRoutes(ctx) {
     ['POST', /^\/api\/prs\/([^/]+)\/update-branch$/, (m) => handleUpdateBranch(ctx, m)],
     ['POST', /^\/api\/prs\/([^/]+)\/builds$/, (m, req) => handleTriggerBuilds(ctx, m, req)],
     ['GET', /^\/api\/builds$/, () => ctx.tracker.refresh()],
+    ['GET', /^\/api\/builds\/overview$/, async () => buildOverview({
+      gh: ctx.gh, tracker: ctx.tracker, queue: ctx.queue, login: await getLogin(ctx.gh),
+    })],
     ['GET', /^\/api\/prs\/([^/]+)\/build-check$/, (m) => ctx.tracker.check(id(m[1]))],
     ['GET', /^\/api\/builds-config$/, () => handleBuildsConfig(ctx)],
     ...connectionRoutes(ctx),

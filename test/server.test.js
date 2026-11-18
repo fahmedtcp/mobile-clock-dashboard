@@ -173,3 +173,13 @@ test('force passes through as a list of keys, anything else becomes []', async (
   await req('POST', '/api/prs/1/builds', { headers: api, body: { keys: ['mcIos'], force: 'mcIos' } });
   assert.deepEqual(fakeTracker.forceCalls, [['mcIos'], []]);
 });
+
+test('builds overview route answers with slots, running, and history', async () => {
+  fakeTracker.waitingRetries = () => [];
+  const res = await req('GET', '/api/builds/overview', { headers: api });
+  assert.equal(res.status, 200);
+  const o = res.json();
+  assert.deepEqual(o.slots.map((s) => s.label), ['iOS MobileClock', 'iOS MobileKiosk']);
+  assert.deepEqual(o.running, []);
+  assert.deepEqual(o.history, []);
+});
