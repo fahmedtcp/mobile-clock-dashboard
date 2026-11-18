@@ -1214,3 +1214,30 @@ details.more > summary { cursor: pointer; font-weight: 600; color: var(--label-2
   .hero-card, .hc { box-shadow: 0 0 0 1px var(--label-2); }
   .quote, .hc .note { box-shadow: inset 0 0 0 1px var(--label-3); }
 }
+
+/* ---------- Builds ---------- */
+.slot-card { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px 24px; margin: 20px 0 24px; padding: 18px 20px; border-radius: var(--radius); background: var(--card); box-shadow: inset 0 0 0 .5px var(--separator); }
+.slot-heading { grid-column: 1 / -1; margin: 0; font-size: .8125rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; color: var(--label-2); }
+.slot { display: grid; gap: 6px; min-width: 0; }
+.slot-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.slot-name { font-size: 1.375rem; font-weight: 700; letter-spacing: -.02em; line-height: 1.15; }
+.slot-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: .875rem; }
+.slot-dot { width: 10px; height: 10px; border-radius: 50%; transition: background-color 250ms ease-out, box-shadow 250ms ease-out; }
+.slot.busy .slot-state { color: var(--orange); }
+.slot.busy .slot-dot { background: var(--orange-vivid); }
+.slot.free .slot-state { color: var(--green); }
+.slot.free .slot-dot { box-shadow: inset 0 0 0 2px var(--green); }
+.slot-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; color: var(--label-2); font-size: .8125rem; }
+.slot-progress { display: flex; align-items: center; gap: 10px; }
+.slot-track { flex: 1; height: 4px; border-radius: 4px; background: var(--fill); overflow: hidden; }
+.slot-track span { display: block; height: 100%; background: var(--orange-vivid); transform-origin: left; transform: scaleX(0); transition: transform 1s linear; }
+.slot-left { color: var(--label-2); font-size: .75rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.slot-waiting { color: var(--orange); font-weight: 600; }
+.group > li.day-label { padding: 14px 16px 6px; color: var(--label-2); font-size: .75rem; font-weight: 600; letter-spacing: .02em; text-transform: uppercase; background: none; }
+.group > li.day-label::before, .group > li.day-label + li::before { display: none; }
+.builds-week { margin-top: 12px; text-align: center; font-variant-numeric: tabular-nums; }
+#view-builds .group > li { transition: opacity 200ms ease-out; }
+@starting-style { #view-builds .group > li { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .slot-track span, .slot-dot, #view-builds .group > li { transition: none; }
+}

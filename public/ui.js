@@ -57,6 +57,7 @@ export function duration(run) {
 // One vocabulary for a run or tracked build's state: [label, color, spinning?]
 export function statusOf(run) {
   if (run.status !== 'completed') {
+    if (run.status === 'waiting-slot') return ['Waiting for iOS slot to retry', 'orange', false];
     if (run.retries && (run.status === 'queued' || run.status === 'requested')) return ['Retrying', 'orange', true];
     if (run.status === 'requested') return ['Starting', 'blue', true];
     if (run.status === 'in_progress') return ['Running', 'orange', true];

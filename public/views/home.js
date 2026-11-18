@@ -12,6 +12,8 @@ import { parseMarkdown, botHeader } from '../markdown.js';
 import { runLocal } from '../local-jobs.js';
 
 let ctx;
+// Other views (Builds) reuse the build sheet and bug actions here before Home has ever been shown.
+export function bindContext(appCtx) { ctx ??= appCtx; }
 const local = {
   prTab: 'mine',
   home: null, homeError: null, homeAt: 0, // /api/home: hero, My Work, feed, shift cards
@@ -21,7 +23,6 @@ const local = {
   ts: { prResults: {} },
   lookup: null,
   openReasons: new Set(),
-  workflows: new Set(),
 };
 const SLOW_MS = 60000; // /api/home refreshes every minute (the server caches it for 30 s)
 const SHIFT_TICK_MS = 30000;
@@ -195,7 +196,7 @@ function bugDescription(build) {
   ].filter((line) => line !== null).join('\n');
 }
 
-async function createBug(build) {
+export async function createBug(build) {
   const summary = el('input', {
     class: 'field', value: `CI build failure: ${build.label} on ${build.branch}`, maxlength: 255, required: true,
     'aria-label': 'Summary',
@@ -220,7 +221,7 @@ async function createBug(build) {
   else toast(`Created ${created.key}`, 'ok');
 }
 
-async function installOnSim(build) {
+export async function installOnSim(build) {
   let sims = [];
   try { sims = await api('/api/simulators'); } catch (err) { return toast(err.message, 'bad'); }
   const select = el('select', { class: 'field', 'aria-label': 'Simulator' },
@@ -283,7 +284,7 @@ function triggeredBuildRow(build) {
           el('span', { class: 'mono' }, build.branch), sep(),
           el('span', {}, triggeredAgo))),
       triggeredBuildTrail(build)),
-    build.status !== 'completed' && el('div', { class: 'progress-line', 'aria-hidden': 'true' }),
+    !['completed', 'waiting-slot'].includes(build.status) && el('div', { class: 'progress-line', 'aria-hidden': 'true' }),
     build.reason && reasonDetails(build));
 }
 
@@ -1099,74 +1100,12 @@ function renderLookup() {
   out.replaceChildren(lookupCard(lookup));
 }
 
-// ---------- actions monitor ----------
-
-function runsQuery() {
-  const query = new URLSearchParams();
-  if ($('f-workflow').value) query.set('workflow', $('f-workflow').value);
-  if ($('f-branch').value.trim()) query.set('branch', $('f-branch').value.trim());
-  if ($('f-mine').checked) query.set('mine', '1');
-  return query.toString();
-}
-
-async function runAction(run, action) {
-  const cancelling = action === 'cancel';
-  const ok = await confirmSheet({
-    title: cancelling ? 'Cancel Run' : 'Rerun Failed Jobs',
-    body: [el('p', {}, `${run.workflowName} on `, el('span', { class: 'mono' }, run.headBranch))],
-    confirmLabel: cancelling ? 'Cancel Run' : 'Rerun',
-    danger: cancelling,
-    onConfirm: () => post(`/api/runs/${run.databaseId}/${action}`),
-  });
-  if (ok) ctx.refresh();
-}
-
-// Adds workflows seen in any run so far, so the filter keeps options that the current filter hides.
-function addWorkflowOptions(runs) {
-  for (const run of runs) local.workflows.add(run.workflowName);
-  const select = $('f-workflow');
-  const known = new Set([...select.options].map((o) => o.textContent));
-  for (const name of [...local.workflows].sort()) {
-    if (!known.has(name)) select.append(el('option', { value: name }, name));
-  }
-}
-
-function runRow(run) {
-  return el('li', {},
-    el('div', { class: 'row' },
-      el('div', { class: 'row-body' },
-        el('div', { class: 'row-title' }, ext(run.url, run.workflowName)),
-        el('div', { class: 'row-sub' },
-          el('span', { class: 'mono', title: run.headBranch }, run.headBranch), sep(),
-          el('span', {}, run.event.replaceAll('_', ' ')), sep(),
-          el('span', {}, ago(run.createdAt)), sep(),
-          el('span', { class: 'num' }, duration(run)))),
-      el('div', { class: 'row-trail' },
-        statusChip(run),
-        run.conclusion === 'failure' && smallButton(() => runAction(run, 'rerun'), 'Rerun'),
-        run.status !== 'completed' && el('button', {
-          class: 'btn btn-small btn-danger', type: 'button', onclick: () => runAction(run, 'cancel'),
-        }, 'Cancel'))));
-}
-
-function renderRuns() {
-  const { shared } = ctx;
-  showError($('runs-error'), ctx.errors?.runs);
-  addWorkflowOptions(shared.runs);
-  if (!shared.runsLoaded) return $('runs').replaceChildren(...skeleton(4));
-  if (!shared.runs.length) {
-    return $('runs').replaceChildren(empty('bolt', 'No runs', 'Nothing matches these filters.', 'gray'));
-  }
-  $('runs').replaceChildren(...shared.runs.map(runRow));
-}
-
 // ---------- view ----------
 
 function render() {
   renderHome();
   renderTriggered();
   renderPrs();
-  renderRuns();
   renderFreshness();
   loadLatestBuilds(visiblePrs().map((pr) => pr.ticketKey));
 }
@@ -1177,10 +1116,9 @@ function renderFreshness() {
   const errors = ctx.errors ?? {};
   sectionFreshness('builds', { at: shared.loadedAt.builds, intervalMs: POLL_MS, error: errors.prs, onRefresh: ctx.refresh });
   sectionFreshness('prs', { at: shared.loadedAt.prs, intervalMs: POLL_MS, error: errors.prs, onRefresh: ctx.refresh });
-  sectionFreshness('runs', { at: shared.loadedAt.runs, intervalMs: POLL_MS, error: errors.runs, onRefresh: ctx.refresh });
 }
 
-function segmented(name, options, value, onChange) {
+export function segmented(name, options, value, onChange) {
   const select = (e, optionValue) => {
     for (const tab of e.currentTarget.parentElement.children) {
       tab.setAttribute('aria-selected', String(tab === e.currentTarget));
@@ -1211,22 +1149,6 @@ function lookupSection() {
     el('div', { id: 'lookup-result' }));
 }
 
-function runFilters() {
-  let branchTimer;
-  const applyFilters = () => ctx.setRunsQuery(runsQuery());
-  return el('div', { class: 'filters' },
-    el('select', { id: 'f-workflow', 'aria-label': 'Workflow', onchange: applyFilters },
-      el('option', { value: '' }, 'All workflows')),
-    el('input', {
-      id: 'f-branch', type: 'search', placeholder: 'Branch', 'aria-label': 'Branch',
-      autocomplete: 'off', spellcheck: 'false',
-      oninput: () => { clearTimeout(branchTimer); branchTimer = setTimeout(applyFilters, 400); },
-    }),
-    el('label', { class: 'switch' },
-      el('input', { type: 'checkbox', id: 'f-mine', role: 'switch', onchange: applyFilters }),
-      el('span', {}, 'Mine')));
-}
-
 function homeSections() {
   const prFilter = segmented('Pull request filter', [['mine', 'Mine'], ['review', 'Review Requested']], local.prTab,
     (tab) => { local.prTab = tab; renderPrs(); });
@@ -1234,10 +1156,9 @@ function homeSections() {
     el('div', { id: 'home-cards', class: 'home-cards' }),
     section('builds', 'Triggered Builds', ['hammer', 'indigo'], el('span', { class: 'hint', id: 'retry-hint' })),
     el('details', { class: 'more', id: 'home-more' },
-      el('summary', {}, 'More: Pull Requests, Build Lookup, and Actions'),
+      el('summary', {}, 'More: Pull Requests and Build Lookup'),
       section('prs', 'Pull Requests', ['pr', 'blue'], prFilter),
-      lookupSection(),
-      section('runs', 'Actions', ['bolt', 'teal'], runFilters())),
+      lookupSection()),
   ];
 }
 
