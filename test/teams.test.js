@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCard, validWebhookUrl, createTeams, mentionText, parsePeopleMap, parseLogins } from '../lib/teams.js';
+import { buildCard, defaultReviewText, validText, validWebhookUrl, createTeams, mentionText, parsePeopleMap, parseLogins } from '../lib/teams.js';
 
 const SUMMARY = 'SubSearch | Testing — Consume V7-31623 fix for substitute state after template selection or edit';
 const TICKET_URL = 'https://timeclockplus.atlassian.net/browse/TCPMOB-1735';
@@ -26,10 +26,7 @@ test('card matches the user template: title, greeting, links, ready line, thanks
   const body = attachment.content.body.map((b) => b.text);
   assert.deepEqual(body, [
     `TCPMOB-1735 ${SUMMARY}`,
-    'Hey Team!',
-    `Ticket: [TCPMOB-1735](${TICKET_URL})\n\nPR: [PR#1085](${PR_URL})`,
-    'is ready for Dev-Review, Kindly take a peak at your convenience.',
-    'Thanks',
+    `Hey Team!\n\nTicket: [TCPMOB-1735](${TICKET_URL})\n\nPR: [PR#1085](${PR_URL})\n\nis ready for Dev-Review, Kindly take a peak at your convenience.\n\nThanks`,
     '<at>Foad Ahmed</at> <at>Hamza Ashfaq</at> No Email',
   ]);
   assert.equal(attachment.content.body[0].weight, 'Bolder');
@@ -44,12 +41,32 @@ test('card matches the user template: title, greeting, links, ready line, thanks
   ]);
 });
 
-test('optional note goes before Thanks; markdown in untrusted text is escaped', () => {
-  const card = buildCard({ ...args, summary: 'Fix [link](http://evil) *bold*', note: 'Focus on the [retry](x) logic' });
-  const body = card.attachments[0].content.body.map((b) => b.text);
-  assert.equal(body[0], 'TCPMOB-1735 Fix \\[link\\](http://evil) \\*bold\\*');
-  assert.equal(body[4], 'Focus on the \\[retry\\](x) logic');
-  assert.equal(body[5], 'Thanks');
+test('defaultReviewText is the team wording, links included', () => {
+  assert.equal(defaultReviewText({ key: 'TCPMOB-1735', ticketUrl: TICKET_URL, prNumber: 1085, prUrl: PR_URL }),
+    `Hey Team!\n\nTicket: [TCPMOB-1735](${TICKET_URL})\n\nPR: [PR#1085](${PR_URL})\n\nis ready for Dev-Review, Kindly take a peak at your convenience.\n\nThanks`);
+});
+
+test('buildCard uses given text unescaped and keeps mentions after it', () => {
+  const card = buildCard({ ...args, text: '**Hi** [x](https://e.x)' });
+  const { body, msteams } = card.attachments[0].content;
+  assert.equal(body.length, 3);
+  assert.equal(body[1].text, '**Hi** [x](https://e.x)');
+  assert.equal(body[2].text, '<at>Foad Ahmed</at> <at>Hamza Ashfaq</at> No Email');
+  assert.equal(msteams.entities.length, 2);
+});
+
+test('title stays escaped even with custom text', () => {
+  const card = buildCard({ ...args, summary: 'Fix [link](http://evil) a*b', text: 'Hi' });
+  assert.equal(card.attachments[0].content.body[0].text, 'TCPMOB-1735 Fix \\[link\\](http://evil) a\\*b');
+});
+
+test('validText: missing gives the fallback; empty or over 2,000 characters is a 400', () => {
+  assert.equal(validText(undefined, 'def'), 'def');
+  assert.equal(validText('  hi  ', 'def'), 'hi');
+  assert.throws(() => validText('   ', 'def'), (e) => e.status === 400 && /can't be empty/.test(e.message));
+  assert.throws(() => validText('x'.repeat(2001), 'def'), (e) => e.status === 400 && /2,000/.test(e.message));
+  assert.equal(validText('x'.repeat(2000), 'def').length, 2000);
+  assert.throws(() => validText(5, 'def'), (e) => e.status === 400);
 });
 
 test('mention names are sanitized so they cannot break out of <at>', () => {

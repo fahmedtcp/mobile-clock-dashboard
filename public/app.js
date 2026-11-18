@@ -1,6 +1,7 @@
 import { $, api, post, el, icon, glyph, toast, startFreshnessTicker } from './ui.js';
 import { diffNotifications, pollDelay } from './notify.js';
 import home from './views/home.js';
+import builds from './views/builds.js';
 import release from './views/release.js';
 import quality from './views/quality.js';
 import team from './views/team.js';
@@ -11,22 +12,22 @@ import { enablePullToRefresh } from './pull.js';
 import { openTicketPanel } from './tickets-ui.js';
 import { watch as watchLocalJob } from './local-jobs.js';
 
-const VIEWS = [home, release, quality, team, time];
+const VIEWS = [home, builds, release, quality, team, time];
 // Settings sits at the bottom of the sidebar, outside the 1–5 shortcuts.
 const ALL = [...VIEWS, settings];
 const LOOK = {
-  home: ['home', 'blue'], release: ['release', 'purple'], quality: ['quality', 'teal'], team: ['team', 'orange'],
+  home: ['home', 'blue'], builds: ['hammer', 'indigo'], release: ['release', 'purple'], quality: ['quality', 'teal'], team: ['team', 'orange'],
   time: ['calendar', 'green'], settings: ['gear', 'gray'],
 };
 const badges = {}; // view id -> count shown on the nav item
 
 // Shared data every view can read; refreshed by one polling loop.
 const shared = {
-  loadedAt: { prs: 0, builds: 0, runs: 0 },
-  login: '', buildConfig: [], prs: [], prsLoaded: false, ticketError: null, builds: [], runs: [], runsLoaded: false,
-  badges: [], runsQuery: '',
+  loadedAt: { prs: 0, builds: 0, overview: 0 },
+  login: '', buildConfig: [], prs: [], prsLoaded: false, ticketError: null, builds: [], overview: null,
+  badges: [],
 };
-const errors = { prs: null, runs: null };
+const errors = { prs: null, overview: null };
 const mounted = new Map();
 
 let current = 'home';
@@ -171,23 +172,26 @@ async function loadIdentityOnce() {
 const fetchPollData = () => Promise.allSettled([
   api('/api/prs'),
   api('/api/builds'),
-  api(`/api/runs?${shared.runsQuery}`),
+  api('/api/builds/overview'),
   api('/api/status'),
   api('/api/time/pending'),
 ]);
 
-function applyPollResults([prs, builds, runs, statusBadges, pending]) {
+function applyPollResults([prs, builds, overview, statusBadges, pending]) {
   errors.prs = prs.status === 'rejected' ? prs.reason : builds.status === 'rejected' ? builds.reason : null;
-  errors.runs = runs.status === 'rejected' ? runs.reason : null;
+  errors.overview = overview.status === 'rejected' ? overview.reason : null;
   const now = Date.now(); // freshness: when each part of the poll last succeeded
   if (prs.status === 'fulfilled') shared.loadedAt.prs = now;
   if (builds.status === 'fulfilled') shared.loadedAt.builds = now;
-  if (runs.status === 'fulfilled') shared.loadedAt.runs = now;
+  if (overview.status === 'fulfilled') shared.loadedAt.overview = now;
   if (prs.status === 'fulfilled') {
     Object.assign(shared, { prs: prs.value.prs, ticketError: prs.value.ticketError, prsLoaded: true });
   }
   if (builds.status === 'fulfilled') shared.builds = builds.value;
-  if (runs.status === 'fulfilled') Object.assign(shared, { runs: runs.value, runsLoaded: true });
+  if (overview.status === 'fulfilled') {
+    shared.overview = overview.value;
+    ctx.setBadge('builds', overview.value.running.filter((r) => r.mine).length + overview.value.waiting.length);
+  }
   if (statusBadges.status === 'fulfilled') shared.badges = statusBadges.value;
   if (pending.status === 'fulfilled') { shared.timePending = pending.value; ctx.setBadge('time', pending.value.count); }
 }
@@ -215,7 +219,7 @@ async function tick() {
     ALL.find((v) => v.id === current)?.update?.(shared, errors);
     notifyChanges();
   } finally {
-    schedule(pollDelay(shared.builds, shared.runs)); // a render error must never stop polling
+    schedule(pollDelay(shared.builds, shared.overview?.running ?? [])); // a render error must never stop polling
   }
 }
 
@@ -224,7 +228,6 @@ const ctx = {
   setBadge(id, count) { if (badges[id] !== count) { badges[id] = count; renderNav(); } },
   go: (id) => show(id),
   refresh: () => schedule(0),
-  setRunsQuery(query) { shared.runsQuery = query; schedule(0); },
   // After a Settings save: new keys or defaults may change what every view shows.
   async settingsChanged(saved) {
     shared.settings = saved;

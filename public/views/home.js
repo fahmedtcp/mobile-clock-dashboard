@@ -12,6 +12,8 @@ import { parseMarkdown, botHeader } from '../markdown.js';
 import { runLocal } from '../local-jobs.js';
 
 let ctx;
+// Other views (Builds) reuse the build sheet and bug actions here before Home has ever been shown.
+export function bindContext(appCtx) { ctx ??= appCtx; }
 const local = {
   prTab: 'mine',
   home: null, homeError: null, homeAt: 0, // /api/home: hero, My Work, feed, shift cards
@@ -21,7 +23,6 @@ const local = {
   ts: { prResults: {} },
   lookup: null,
   openReasons: new Set(),
-  workflows: new Set(),
 };
 const SLOW_MS = 60000; // /api/home refreshes every minute (the server caches it for 30 s)
 const SHIFT_TICK_MS = 30000;
@@ -195,7 +196,7 @@ function bugDescription(build) {
   ].filter((line) => line !== null).join('\n');
 }
 
-async function createBug(build) {
+export async function createBug(build) {
   const summary = el('input', {
     class: 'field', value: `CI build failure: ${build.label} on ${build.branch}`, maxlength: 255, required: true,
     'aria-label': 'Summary',
@@ -220,7 +221,7 @@ async function createBug(build) {
   else toast(`Created ${created.key}`, 'ok');
 }
 
-async function installOnSim(build) {
+export async function installOnSim(build) {
   let sims = [];
   try { sims = await api('/api/simulators'); } catch (err) { return toast(err.message, 'bad'); }
   const select = el('select', { class: 'field', 'aria-label': 'Simulator' },
@@ -283,7 +284,7 @@ function triggeredBuildRow(build) {
           el('span', { class: 'mono' }, build.branch), sep(),
           el('span', {}, triggeredAgo))),
       triggeredBuildTrail(build)),
-    build.status !== 'completed' && el('div', { class: 'progress-line', 'aria-hidden': 'true' }),
+    !['completed', 'waiting-slot'].includes(build.status) && el('div', { class: 'progress-line', 'aria-hidden': 'true' }),
     build.reason && reasonDetails(build));
 }
 
@@ -427,17 +428,52 @@ function testSwitch(info, notSetUpText) {
   return { box, row };
 }
 
-// onReady handler: keeps the confirm button's label and disabled state in step with the test switch.
-function syncWithTestSwitch(testBox, liveLabel, isDisabled) {
+// onReady handler: keeps the send button's label and disabled state in step with the test switch,
+// the Send Anyway box, and the message text. `watch` lists other inputs that change the answer.
+function syncSendButton({ testBox, liveLabel, isDisabled, anyway = null, watch = [] }) {
   return (okBtn) => {
     const sync = () => {
-      okBtn.textContent = testBox.checked ? 'Send Test' : liveLabel;
-      okBtn.disabled = isDisabled(testBox.checked);
+      const testing = testBox.checked;
+      okBtn.textContent = testing ? 'Send Test' : anyway?.checked ? 'Send Again' : liveLabel;
+      okBtn.disabled = isDisabled(testing);
     };
-    testBox.addEventListener('change', sync);
+    for (const node of [testBox, anyway, ...watch].filter(Boolean)) {
+      node.addEventListener('change', sync);
+      node.addEventListener('input', sync);
+    }
     sync();
   };
 }
+
+// Inside the resend timer: an unchecked "Send Anyway" box, so an accidental second send stays blocked.
+const anywayBox = () => el('input', { type: 'checkbox' });
+const anywayRow = (box) => el('label', { class: 'switch send-anyway' }, box, el('span', {}, 'Send Anyway'));
+
+// The message text: pre-filled with the team wording, editable, with Reset to Default.
+const TEXT_MAX = 2000;
+const TEXT_COUNT_FROM = 1800;
+function messageEditor(defaultText, onChange) {
+  const area = el('textarea', { class: 'field msg-text', rows: 8, maxlength: TEXT_MAX, 'aria-label': 'Message' });
+  area.value = defaultText;
+  const count = el('span', { class: 'footnote msg-count', 'aria-live': 'polite' });
+  const reset = el('button', { type: 'button', class: 'linkish', onclick: () => {
+    area.focus();
+    area.select();
+    // insertText keeps the browser's undo history, so Cmd+Z brings the edited text back
+    if (!document.execCommand('insertText', false, defaultText)) area.value = defaultText;
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+  } }, 'Reset to Default');
+  const paint = () => {
+    const n = area.value.length;
+    count.textContent = n > TEXT_COUNT_FROM ? `${n.toLocaleString()}/2,000` : '';
+    onChange();
+  };
+  area.addEventListener('input', paint);
+  return { area, node: el('div', { class: 'msg-editor' }, area, el('div', { class: 'msg-tools' }, reset, count)), paint };
+}
+
+const messageBlocks = (text) => parseMarkdown(text).map(mdBlock);
+const blankText = (area) => !area.value.trim();
 
 const teamsCard = (...children) => el('div', { class: 'teams-card', 'aria-label': 'Message preview' }, ...children);
 
@@ -454,19 +490,15 @@ function mentionCheckboxes(people) {
   return el('fieldset', { class: 'choice-list' }, el('legend', { class: 'sr-only' }, 'Mention'), boxes);
 }
 
-// A faithful preview of the Teams card.
-function paintReviewPreview(preview, info, note, chosen) {
+// A faithful preview of the Teams card: fixed title, the message text, then the mentions.
+function paintReviewPreview(preview, info, text, chosen) {
   const personClass = (person, i) => {
     if (!person.email) return 'tc-plain';
     return i === 0 && person.login === ctx.shared.login ? 'tc-me' : 'tc-at';
   };
   preview.replaceChildren(
     el('div', { class: 'tc-title' }, info.title),
-    el('p', {}, 'Hey Team!'),
-    el('p', {}, 'Ticket: ', ext(info.ticketUrl, info.key), el('br'), 'PR: ', ext(info.prUrl, `PR#${info.prNumber}`)),
-    el('p', {}, 'is ready for Dev-Review, Kindly take a peak at your convenience.'),
-    note.value.trim() && el('p', {}, note.value.trim()),
-    el('p', {}, 'Thanks'),
+    ...messageBlocks(text),
     el('p', { class: 'tc-people' },
       chosen.map((person, i) => el('span', { class: personClass(person, i) }, person.name))));
 }
@@ -480,7 +512,6 @@ const teamsSetupSteps = () => [
     el('li', {}, 'Paste it into Settings, under Teams.')),
 ];
 
-// The note, mention checkboxes, and a preview that repaints as either changes.
 // "+ Add person": mention someone just for this message by GitHub login. Nothing is saved.
 const ADD_MAX = 5;
 function addPersonRow(info, people, added) {
@@ -514,19 +545,14 @@ function addPersonRow(info, people, added) {
 }
 
 function reviewMessageForm(info) {
-  const note = el('textarea', {
-    class: 'field', rows: 2, maxlength: 500, placeholder: 'Optional note, for example "Small one, mostly tests"',
-    'aria-label': 'Note',
-  });
   const people = mentionCheckboxes(info.people);
   const chosen = () => [...people.querySelectorAll('input:checked')]
     .map((input) => info.people.find((p) => p.login === input.value));
   const preview = teamsCard();
-  const paint = () => paintReviewPreview(preview, info, note, chosen());
-  note.addEventListener('input', paint);
-  people.addEventListener('change', paint);
-  paint();
-  return { note, people, chosen, preview };
+  const editor = messageEditor(info.defaultText, () => paintReviewPreview(preview, info, editor.area.value, chosen()));
+  people.addEventListener('change', editor.paint);
+  editor.paint();
+  return { editor, people, chosen, preview };
 }
 
 // Ask the team channel for a review, in the user's own message format. Preview first; nothing sends until confirmed.
@@ -536,28 +562,33 @@ async function requestReview(pr) {
   const cooling = isCoolingDown(info);
   let sentTest = false;
   const test = testSwitch(info, 'Test chat not set up (TEAMS_TEST_WEBHOOK_URL)');
-  const { note, people, chosen, preview } = reviewMessageForm(info);
+  const { editor, people, chosen, preview } = reviewMessageForm(info);
+  const anyway = cooling ? anywayBox() : null;
   const added = new Set();
   const ok = await confirmSheet({
     title: 'Request Review on Teams',
     body: info.configured
       ? [
-          preview,
+          el('div', { class: 'msg-split' }, el('label', { class: 'field-label' }, 'Message', editor.node), preview),
           el('div', {}, el('p', { class: 'list-label', 'aria-hidden': 'true' }, 'Mention'), people, addPersonRow(info, people, added)),
-          el('label', { class: 'field-label' }, 'Note', note),
           test.row,
           el('p', { class: 'footnote' }, cooling
             ? cooldownNote(`#${pr.number}`, info.cooldownUntil)
             : 'Posts to your team channel through its Workflows webhook.'),
+          anyway && anywayRow(anyway),
         ]
       : teamsSetupSteps(),
     confirmLabel: info.testConfigured ? 'Send Test' : 'Send to Teams',
-    confirmDisabled: !info.configured || (cooling && !info.testConfigured),
-    onReady: syncWithTestSwitch(test.box, 'Send to Teams', (testing) => !info.configured || (!testing && cooling)),
+    confirmDisabled: !info.configured,
+    onReady: syncSendButton({
+      testBox: test.box, liveLabel: 'Send to Teams', anyway, watch: [editor.area],
+      isDisabled: (testing) => !info.configured || blankText(editor.area) || (!testing && cooling && !anyway.checked),
+    }),
     onConfirm: async () => {
       sentTest = test.box.checked;
       await post(`/api/prs/${pr.number}/review-request`, {
-        logins: chosen().map((p) => p.login), note: note.value, test: sentTest, added: [...added],
+        logins: chosen().map((p) => p.login), text: editor.area.value, test: sentTest, added: [...added],
+        force: Boolean(!sentTest && anyway?.checked),
       });
     },
   });
@@ -673,10 +704,12 @@ function qaFootnote(key, info, cooling) {
       + 'The ticket status doesn\'t change.';
 }
 
-const qaPreview = (info) => teamsCard(
-  el('div', { class: 'tc-title' }, info.title),
-  el('p', {}, ext(info.ticketUrl, info.ticketUrl), ' is ready for PRE-QA. Builds are mentioned in the ticket.'),
-  el('p', {}, info.tag.mention ? el('span', { class: 'tc-at' }, info.tag.name) : el('strong', {}, info.tag.name)));
+function paintQaPreview(preview, info, text) {
+  preview.replaceChildren(
+    el('div', { class: 'tc-title' }, info.title),
+    ...messageBlocks(text),
+    el('p', {}, info.tag.mention ? el('span', { class: 'tc-at' }, info.tag.name) : el('strong', {}, info.tag.name)));
+}
 
 // Tell QA the ticket is ready for PRE-QA, in the team's format. Separate from Send to QA for now.
 async function requestQa(pr) {
@@ -686,25 +719,32 @@ async function requestQa(pr) {
   const cooling = isCoolingDown(info);
   let sentTest = false;
   const test = testSwitch(info, 'Test chat not set up');
-  const preview = qaPreview(info);
+  const preview = teamsCard();
+  const editor = messageEditor(info.defaultText, () => paintQaPreview(preview, info, editor.area.value));
+  editor.paint();
+  const anyway = cooling ? anywayBox() : null;
   const ready = info.configured && info.ready;
   const ok = await confirmSheet({
     title: 'Request QA Review on Teams',
     body: [
-      preview,
+      el('div', { class: 'msg-split' }, el('label', { class: 'field-label' }, 'Message', editor.node), preview),
       !info.ready && el('p', { class: 'banner error' }, info.reason),
       info.configured
         ? test.row
         : el('p', { class: 'muted' }, 'The QA channel isn\'t set up. Add its webhook in Settings, under Teams.'),
       el('p', { class: 'footnote' }, qaFootnote(key, info, cooling)),
+      anyway && anywayRow(anyway),
     ].filter(Boolean),
     confirmLabel: info.testConfigured ? 'Send Test' : 'Send to QA Channel',
     confirmDisabled: !info.ready || (!info.configured && !info.testConfigured),
-    onReady: syncWithTestSwitch(test.box, 'Send to QA Channel',
-      (testing) => !info.ready || (testing ? !info.testConfigured : !ready || cooling)),
+    onReady: syncSendButton({
+      testBox: test.box, liveLabel: 'Send to QA Channel', anyway, watch: [editor.area],
+      isDisabled: (testing) => !info.ready || blankText(editor.area)
+        || (testing ? !info.testConfigured : !ready || (cooling && !anyway.checked)),
+    }),
     onConfirm: async () => {
       sentTest = test.box.checked;
-      await post(`/api/tickets/${key}/qa-request`, { test: sentTest });
+      await post(`/api/tickets/${key}/qa-request`, { test: sentTest, text: editor.area.value, force: Boolean(!sentTest && anyway?.checked) });
     },
   });
   if (!ok) return;
@@ -715,15 +755,18 @@ async function requestQa(pr) {
 
 // ---------- build sheet ----------
 
+// Each build is a row: its checkbox, then room for a conflict warning right under it (filled by paintConflicts).
 function buildCheckboxes(preselect = null) {
-  const boxes = ctx.shared.buildConfig.map((config) => {
+  const rows = ctx.shared.buildConfig.map((config) => {
     const [platform, ...rest] = config.label.split(' ');
-    return el('label', { class: 'choice' },
-      el('input', { type: 'checkbox', value: config.key, checked: preselect ? preselect.includes(config.key) : config.defaultChecked !== false }),
-      el('span', { class: 'choice-label' }, rest.join(' ')),
-      el('span', { class: 'choice-platform' }, platform));
+    return el('div', { class: 'choice-row', 'data-key': config.key },
+      el('label', { class: 'choice' },
+        el('input', { type: 'checkbox', value: config.key, checked: preselect ? preselect.includes(config.key) : config.defaultChecked !== false }),
+        el('span', { class: 'choice-label' }, rest.join(' ')),
+        el('span', { class: 'choice-platform' }, platform)),
+      el('div', { class: 'build-warn', hidden: true }));
   });
-  return el('fieldset', { class: 'choice-list' }, el('legend', { class: 'sr-only' }, 'Builds'), boxes);
+  return el('fieldset', { class: 'choice-list' }, el('legend', { class: 'sr-only' }, 'Builds'), rows);
 }
 
 // Uncheck builds that already started so a retry can't dispatch them twice.
@@ -734,11 +777,61 @@ function uncheckStarted(fieldset, startedKeys) {
   }
 }
 
-// onReady handler: the confirm button counts the checked builds and locks the list while sending.
-function syncBuildButton(fieldset, checked) {
+const minutesSince = (iso) => (iso ? Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000)) : null);
+
+function conflictText(label, c) {
+  const mins = minutesSince(c.startedAt);
+  const took = mins === null ? '' : ` (${mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} hr ${mins % 60} min`})`;
+  if (c.rule === 'same-branch') return `${label} is already building this branch${took}.`;
+  return `${label} is already building ${c.ticketKey ?? c.branch} for ${c.actor ?? 'someone'}${took}. A second iOS build fails on TestFlight.`;
+}
+
+// Build sheet state: what's checked, what's queued to start when its iOS slot frees up, and what clashes.
+function buildSheetState(fieldset) {
+  const state = { conflicts: {}, queued: new Set(), warned: new Set() };
+  const box = (key) => fieldset.querySelector(`input[value="${key}"]`);
+  const checked = () => [...fieldset.querySelectorAll('input:checked')].map((i) => i.value);
+  state.startKeys = () => checked().filter((k) => !state.queued.has(k));
+  state.queueKeys = () => checked().filter((k) => state.queued.has(k));
+  state.force = () => state.startKeys().filter((k) => state.conflicts[k]?.length);
+  state.counts = () => ({ start: state.startKeys().length, queue: state.queueKeys().length });
+  const changed = () => fieldset.closest('form')?.dispatchEvent(new Event('change'));
+
+  // A box that first shows a conflict starts unchecked; re-checking it means "start anyway".
+  state.paint = (conflicts) => {
+    Object.assign(state.conflicts, conflicts);
+    for (const row of fieldset.querySelectorAll('.choice-row')) {
+      const { key } = row.dataset;
+      const list = state.conflicts[key] ?? [];
+      const warn = row.querySelector('.build-warn');
+      if (!list.length) { warn.hidden = true; warn.replaceChildren(); continue; }
+      if (!state.warned.has(key)) { state.warned.add(key); box(key).checked = false; state.queued.delete(key); }
+      const label = ctx.shared.buildConfig.find((b) => b.key === key)?.label ?? key;
+      const slot = list.find((c) => c.rule === 'ios-slot') && !list.some((c) => c.rule === 'same-branch');
+      const queueBtn = slot && el('button', {
+        type: 'button', class: 'btn btn-small', 'aria-pressed': String(state.queued.has(key)),
+        onclick: () => {
+          if (state.queued.has(key)) state.queued.delete(key);
+          else { state.queued.add(key); box(key).checked = true; }
+          state.paint({});
+          changed();
+        },
+      }, state.queued.has(key) ? 'Will Start When Free' : 'Start When Free');
+      warn.replaceChildren(...[el('span', {}, conflictText(label, list[0])), queueBtn].filter(Boolean)); // a null would print as text
+      warn.hidden = false;
+    }
+  };
+  fieldset.addEventListener('change', (e) => {
+    if (e.target.matches('input') && !e.target.checked && state.queued.delete(e.target.value)) state.paint({});
+  });
+  return state;
+}
+
+// onReady handler: the confirm button says what will start and what will queue, and locks the list while sending.
+function syncBuildButton(fieldset, counts) {
   return (okBtn, isBusy) => {
     const update = () => {
-      const state = submitState(checked().length, isBusy());
+      const state = submitState(counts(), isBusy());
       okBtn.textContent = state.label;
       okBtn.disabled = state.disabled;
       fieldset.disabled = isBusy();
@@ -748,25 +841,43 @@ function syncBuildButton(fieldset, checked) {
   };
 }
 
-async function openBuildSheet(pr, preselect = null) {
+export async function openBuildSheet(pr, preselect = null) {
   const fieldset = buildCheckboxes(preselect);
-  const checked = () => [...fieldset.querySelectorAll('input:checked')].map((i) => i.value);
+  const sheet = buildSheetState(fieldset);
+  const checking = el('p', { class: 'footnote build-check', role: 'status' }, 'Checking for running builds…');
+  api(`/api/prs/${pr.number}/build-check`).then(({ conflicts }) => {
+    sheet.paint(conflicts);
+    checking.textContent = Object.values(conflicts).some((l) => l.length) ? '' : 'No running builds in the way.';
+    fieldset.closest('form')?.dispatchEvent(new Event('change'));
+  }, () => { checking.textContent = 'Couldn\'t check for running builds. You can still start them.'; });
   let made = [];
+  let queued = 0;
   const ok = await confirmSheet({
     title: `Build #${pr.number}`,
     body: [
       el('p', { class: 'sheet-title' }, pr.title),
       el('p', { class: 'mono pill-mono' }, pr.headRefName),
       el('div', {}, el('p', { class: 'list-label', 'aria-hidden': 'true' }, 'Dev builds'), fieldset),
+      checking,
       el('p', { class: 'footnote' },
         'Dev builds only. QA and InfoSec aren\'t notified. Network and runner failures are retried automatically.'),
     ],
-    onReady: syncBuildButton(fieldset, checked),
+    onReady: syncBuildButton(fieldset, sheet.counts),
     onConfirm: async () => {
       fieldset.disabled = true;
+      const startKeys = sheet.startKeys();
+      const queueKeys = sheet.queueKeys();
       try {
-        made = await post(`/api/prs/${pr.number}/builds`, { keys: checked() });
+        if (startKeys.length) {
+          made = await post(`/api/prs/${pr.number}/builds`, { keys: startKeys, force: sheet.force() });
+          uncheckStarted(fieldset, startKeys); // a failed queue step below must not start them again
+        }
+        for (const key of queueKeys) {
+          await post('/api/build-queue', { prNumber: pr.number, key });
+          queued += 1;
+        }
       } catch (err) {
+        if (err.data?.conflicts) sheet.paint(err.data.conflicts); // started since the sheet opened
         uncheckStarted(fieldset, err.data?.started ?? []);
         fieldset.disabled = false;
         throw err;
@@ -775,7 +886,9 @@ async function openBuildSheet(pr, preselect = null) {
   });
   if (!ok) return;
   ctx.shared.builds.push(...made);
-  toast(`Started ${made.length} ${plural(made.length, 'build')}`, 'ok');
+  const startedText = made.length ? `Started ${made.length} ${plural(made.length, 'build')}` : '';
+  toast(startedText && queued ? `${startedText}, queued ${queued}`
+    : queued ? `Queued ${queued} ${plural(queued, 'build')}. You'll get a notification when it starts.` : startedText, 'ok');
   ctx.refresh();
 }
 
@@ -1026,74 +1139,12 @@ function renderLookup() {
   out.replaceChildren(lookupCard(lookup));
 }
 
-// ---------- actions monitor ----------
-
-function runsQuery() {
-  const query = new URLSearchParams();
-  if ($('f-workflow').value) query.set('workflow', $('f-workflow').value);
-  if ($('f-branch').value.trim()) query.set('branch', $('f-branch').value.trim());
-  if ($('f-mine').checked) query.set('mine', '1');
-  return query.toString();
-}
-
-async function runAction(run, action) {
-  const cancelling = action === 'cancel';
-  const ok = await confirmSheet({
-    title: cancelling ? 'Cancel Run' : 'Rerun Failed Jobs',
-    body: [el('p', {}, `${run.workflowName} on `, el('span', { class: 'mono' }, run.headBranch))],
-    confirmLabel: cancelling ? 'Cancel Run' : 'Rerun',
-    danger: cancelling,
-    onConfirm: () => post(`/api/runs/${run.databaseId}/${action}`),
-  });
-  if (ok) ctx.refresh();
-}
-
-// Adds workflows seen in any run so far, so the filter keeps options that the current filter hides.
-function addWorkflowOptions(runs) {
-  for (const run of runs) local.workflows.add(run.workflowName);
-  const select = $('f-workflow');
-  const known = new Set([...select.options].map((o) => o.textContent));
-  for (const name of [...local.workflows].sort()) {
-    if (!known.has(name)) select.append(el('option', { value: name }, name));
-  }
-}
-
-function runRow(run) {
-  return el('li', {},
-    el('div', { class: 'row' },
-      el('div', { class: 'row-body' },
-        el('div', { class: 'row-title' }, ext(run.url, run.workflowName)),
-        el('div', { class: 'row-sub' },
-          el('span', { class: 'mono', title: run.headBranch }, run.headBranch), sep(),
-          el('span', {}, run.event.replaceAll('_', ' ')), sep(),
-          el('span', {}, ago(run.createdAt)), sep(),
-          el('span', { class: 'num' }, duration(run)))),
-      el('div', { class: 'row-trail' },
-        statusChip(run),
-        run.conclusion === 'failure' && smallButton(() => runAction(run, 'rerun'), 'Rerun'),
-        run.status !== 'completed' && el('button', {
-          class: 'btn btn-small btn-danger', type: 'button', onclick: () => runAction(run, 'cancel'),
-        }, 'Cancel'))));
-}
-
-function renderRuns() {
-  const { shared } = ctx;
-  showError($('runs-error'), ctx.errors?.runs);
-  addWorkflowOptions(shared.runs);
-  if (!shared.runsLoaded) return $('runs').replaceChildren(...skeleton(4));
-  if (!shared.runs.length) {
-    return $('runs').replaceChildren(empty('bolt', 'No runs', 'Nothing matches these filters.', 'gray'));
-  }
-  $('runs').replaceChildren(...shared.runs.map(runRow));
-}
-
 // ---------- view ----------
 
 function render() {
   renderHome();
   renderTriggered();
   renderPrs();
-  renderRuns();
   renderFreshness();
   loadLatestBuilds(visiblePrs().map((pr) => pr.ticketKey));
 }
@@ -1104,10 +1155,9 @@ function renderFreshness() {
   const errors = ctx.errors ?? {};
   sectionFreshness('builds', { at: shared.loadedAt.builds, intervalMs: POLL_MS, error: errors.prs, onRefresh: ctx.refresh });
   sectionFreshness('prs', { at: shared.loadedAt.prs, intervalMs: POLL_MS, error: errors.prs, onRefresh: ctx.refresh });
-  sectionFreshness('runs', { at: shared.loadedAt.runs, intervalMs: POLL_MS, error: errors.runs, onRefresh: ctx.refresh });
 }
 
-function segmented(name, options, value, onChange) {
+export function segmented(name, options, value, onChange) {
   const select = (e, optionValue) => {
     for (const tab of e.currentTarget.parentElement.children) {
       tab.setAttribute('aria-selected', String(tab === e.currentTarget));
@@ -1138,22 +1188,6 @@ function lookupSection() {
     el('div', { id: 'lookup-result' }));
 }
 
-function runFilters() {
-  let branchTimer;
-  const applyFilters = () => ctx.setRunsQuery(runsQuery());
-  return el('div', { class: 'filters' },
-    el('select', { id: 'f-workflow', 'aria-label': 'Workflow', onchange: applyFilters },
-      el('option', { value: '' }, 'All workflows')),
-    el('input', {
-      id: 'f-branch', type: 'search', placeholder: 'Branch', 'aria-label': 'Branch',
-      autocomplete: 'off', spellcheck: 'false',
-      oninput: () => { clearTimeout(branchTimer); branchTimer = setTimeout(applyFilters, 400); },
-    }),
-    el('label', { class: 'switch' },
-      el('input', { type: 'checkbox', id: 'f-mine', role: 'switch', onchange: applyFilters }),
-      el('span', {}, 'Mine')));
-}
-
 function homeSections() {
   const prFilter = segmented('Pull request filter', [['mine', 'Mine'], ['review', 'Review Requested']], local.prTab,
     (tab) => { local.prTab = tab; renderPrs(); });
@@ -1161,10 +1195,9 @@ function homeSections() {
     el('div', { id: 'home-cards', class: 'home-cards' }),
     section('builds', 'Triggered Builds', ['hammer', 'indigo'], el('span', { class: 'hint', id: 'retry-hint' })),
     el('details', { class: 'more', id: 'home-more' },
-      el('summary', {}, 'More: Pull Requests, Build Lookup, and Actions'),
+      el('summary', {}, 'More: Pull Requests and Build Lookup'),
       section('prs', 'Pull Requests', ['pr', 'blue'], prFilter),
-      lookupSection(),
-      section('runs', 'Actions', ['bolt', 'teal'], runFilters())),
+      lookupSection()),
   ];
 }
 

@@ -184,3 +184,58 @@ test('compile error far above the last 3 error lines is still classified as code
   assert.deepEqual(b.classification, { kind: 'code', label: 'Compile error' });
   assert.equal(b.reason.lines.length, 3);
 });
+
+// ---------- slot-aware iOS retries ----------
+const otherIos = { id: 900, html_url: 'u900', head_branch: 'TCPMOB-2-other', actor: { login: 'hamza' }, status: 'in_progress', conclusion: null, created_at: 'c', run_started_at: 's', updated_at: 'd', run_attempt: 1 };
+
+function slotSetup(key = 'mkIos') {
+  const s = setup();
+  s.gh.slotRuns = [];
+  const json = s.gh.json.bind(s.gh);
+  s.gh.json = async (args) => (args[0] === 'api' ? { workflow_runs: s.gh.slotRuns } : json(args));
+  return { ...s, key };
+}
+
+test('failed iOS build waits for a busy slot before retrying', async () => {
+  const { gh, tracker, reruns } = slotSetup();
+  await tracker.trigger(1, ['mkIos']);
+  gh.current = run(1, 'completed', 'failure');
+  gh.slotRuns = [otherIos];
+  const [b] = await tracker.refresh();
+  assert.equal(b.status, 'waiting-slot');
+  assert.equal(b.pendingRun, 77);
+  assert.equal(b.waitingSince, T0);
+  assert.equal(reruns().length, 0);
+  assert.deepEqual(tracker.waitingRetries().map((x) => x.id), [b.id]);
+  await tracker.refresh(); // waiting builds are left for the queue
+  assert.equal(reruns().length, 0);
+  gh.slotRuns = [];
+  await tracker.resumeRetry(b);
+  assert.deepEqual(reruns(), [['run', 'rerun', '77', '--failed', '-R', REPO]]);
+  assert.equal(b.status, 'queued');
+  assert.equal(b.retries, 1);
+  assert.deepEqual(tracker.waitingRetries(), []);
+});
+
+test('failed Android build retries right away even with a busy iOS slot', async () => {
+  const { gh, tracker, reruns } = slotSetup();
+  await tracker.trigger(1, ['mkAndroid']);
+  gh.current = run(1, 'completed', 'failure');
+  gh.slotRuns = [otherIos];
+  const [b] = await tracker.refresh();
+  assert.equal(reruns().length, 1);
+  assert.equal(b.status, 'queued');
+});
+
+test('cancelWait ends a waiting retry as failed', async () => {
+  const { gh, tracker } = slotSetup();
+  await tracker.trigger(1, ['mkIos']);
+  gh.current = run(1, 'completed', 'failure');
+  gh.slotRuns = [otherIos];
+  const [b] = await tracker.refresh();
+  assert.equal(tracker.cancelWait(b.id), true);
+  assert.equal(b.status, 'completed');
+  assert.equal(b.conclusion, 'failure');
+  assert.equal(b.reason.step, 'Retry cancelled');
+  assert.equal(tracker.cancelWait('nope'), false);
+});

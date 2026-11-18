@@ -43,9 +43,13 @@ export function pollDelay(builds, runs) {
   return [...builds, ...runs].some((item) => ACTIVE.has(item.status)) ? 15000 : 60000;
 }
 
-export function submitState(checked, inFlight) {
-  if (inFlight) return { disabled: true, label: 'Triggering...' };
-  return { disabled: checked === 0, label: `Trigger ${checked} ${plural(checked, 'build')}` };
+// The build sheet's main button: always says exactly what will happen.
+export function submitState({ start, queue }, inFlight) {
+  if (inFlight) return { disabled: true, label: 'Starting…' };
+  const builds = (n) => `${n} ${plural(n, 'Build')}`;
+  const label = start && queue ? `Start ${builds(start)}, Queue ${queue}`
+    : queue ? `Queue ${builds(queue)}` : `Start ${builds(start)}`;
+  return { disabled: start + queue === 0, label };
 }
 
 const BEHIND_TTL_MS = 300000; // matches the server cache in config.js

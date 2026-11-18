@@ -8,12 +8,15 @@ import { BuildRequestError } from '../lib/builds.js';
 const fakeTracker = {
   triggerCalls: [],
   nextError: null,
-  async trigger(n, keys) {
+  forceCalls: [],
+  async trigger(n, keys, opts) {
     if (this.nextError) { const err = this.nextError; this.nextError = null; throw err; }
     this.triggerCalls.push([n, keys]);
+    this.forceCalls.push(opts?.force);
     return [{ id: 'x', prNumber: n, key: keys[0] }];
   },
   async refresh() { return []; },
+  async check(n) { return { branch: 'h/x', conflicts: { mcIos: [{ rule: 'ios-slot', n }] } }; },
   list: () => [],
 };
 const fakeGh = {
@@ -149,4 +152,34 @@ test('static files are always revalidated so a browser never mixes old and new m
   });
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers['cache-control'], 'no-cache');
+});
+
+test('build-check route returns conflicts', async () => {
+  const res = await req('GET', '/api/prs/7/build-check', { headers: api });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.json(), { branch: 'h/x', conflicts: { mcIos: [{ rule: 'ios-slot', n: 7 }] } });
+});
+
+test('409 body carries conflicts', async () => {
+  fakeTracker.nextError = Object.assign(new BuildRequestError('A build like this is already running.', 409), { conflicts: { mcIos: [{ rule: 'ios-slot' }] } });
+  const res = await req('POST', '/api/prs/1/builds', { headers: api, body: { keys: ['mcIos'] } });
+  assert.equal(res.status, 409);
+  assert.deepEqual(res.json().conflicts, { mcIos: [{ rule: 'ios-slot' }] });
+});
+
+test('force passes through as a list of keys, anything else becomes []', async () => {
+  fakeTracker.forceCalls.length = 0;
+  await req('POST', '/api/prs/1/builds', { headers: api, body: { keys: ['mcIos'], force: ['mcIos'] } });
+  await req('POST', '/api/prs/1/builds', { headers: api, body: { keys: ['mcIos'], force: 'mcIos' } });
+  assert.deepEqual(fakeTracker.forceCalls, [['mcIos'], []]);
+});
+
+test('builds overview route answers with slots, running, and history', async () => {
+  fakeTracker.waitingRetries = () => [];
+  const res = await req('GET', '/api/builds/overview', { headers: api });
+  assert.equal(res.status, 200);
+  const o = res.json();
+  assert.deepEqual(o.slots.map((s) => s.label), ['iOS MobileClock', 'iOS MobileKiosk']);
+  assert.deepEqual(o.running, []);
+  assert.deepEqual(o.history, []);
 });

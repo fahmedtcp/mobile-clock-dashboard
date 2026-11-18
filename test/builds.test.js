@@ -4,14 +4,22 @@ import { createTracker, matchRun, BuildRequestError } from '../lib/builds.js';
 
 const T0 = Date.parse('2026-11-06T12:00:00Z');
 
-function fakeGh({ pr = { state: 'OPEN', reviewDecision: 'APPROVED', headRefName: 'TCPMOB-1482-x' }, runs = [] } = {}) {
+function fakeGh({ pr = { state: 'OPEN', reviewDecision: 'APPROVED', headRefName: 'TCPMOB-1482-x' }, runs = [], runsByFile = {} } = {}) {
   const runCalls = [];
+  const jsonCalls = [];
   return {
     runCalls,
+    jsonCalls,
+    runsByFile,
     run: async (args) => { runCalls.push(args); return ''; },
-    json: async (args) => (args[0] === 'pr' ? pr : runs),
+    json: async (args, opts) => {
+      jsonCalls.push([args, opts]);
+      if (args[0] === 'api') return { workflow_runs: runsByFile[args[1].split('/').at(-2)] ?? [] };
+      return args[0] === 'pr' ? pr : runs;
+    },
   };
 }
+const activeRest = (branch, id = 500) => ({ id, html_url: `u${id}`, head_branch: branch, actor: { login: 'hamza' }, status: 'in_progress', conclusion: null, created_at: '2026-11-06T11:50:00Z', run_started_at: '2026-11-06T11:50:00Z', updated_at: 'x', run_attempt: 1 });
 
 test('trigger hardcodes dev values and uses the branch from GitHub', async () => {
   const gh = fakeGh();
@@ -164,4 +172,44 @@ test('finished builds older than 7 days are dropped on load; a corrupt file is i
   assert.deepEqual(createTracker(fakeGh(), () => T0, { file }).list().map((b) => b.id), ['b', 'c']);
   writeFileSync(file, '{oops');
   assert.deepEqual(createTracker(fakeGh(), () => T0, { file }).list(), []);
+});
+
+test('trigger refuses a conflicting key unless forced', async () => {
+  const gh = fakeGh({ runsByFile: { 'run-mc-ios.yml': [activeRest('TCPMOB-1764-other')] } });
+  const tracker = createTracker(gh, () => T0);
+  await assert.rejects(tracker.trigger(1, ['mcIos']), (e) => e.status === 409 && e.conflicts.mcIos[0].rule === 'ios-slot');
+  assert.deepEqual(gh.runCalls, []);
+  const made = await tracker.trigger(1, ['mcIos'], { force: ['mcIos'] });
+  assert.equal(made.length, 1);
+  assert.equal(gh.runCalls.length, 1);
+});
+
+test('trigger checks with fresh reads', async () => {
+  const gh = fakeGh();
+  await createTracker(gh, () => T0).trigger(1, ['mcAndroid']);
+  const apiCalls = gh.jsonCalls.filter(([a]) => a[0] === 'api');
+  assert.equal(apiCalls.length, 4);
+  assert.ok(apiCalls.every(([, o]) => o?.fresh === true));
+});
+
+test('trigger with one clean and one conflicting key dispatches nothing', async () => {
+  const gh = fakeGh({ runsByFile: { 'run-mk-ios.yml': [activeRest('TCPMOB-9-z')] } });
+  await assert.rejects(createTracker(gh, () => T0).trigger(1, ['mcAndroid', 'mkIos']), (e) => e.status === 409 && !e.conflicts.mcAndroid);
+  assert.deepEqual(gh.runCalls, []);
+});
+
+test('check returns conflicts per key and the PR branch', async () => {
+  const gh = fakeGh({ runsByFile: { 'run-mc-android.yml': [activeRest('TCPMOB-1482-x')] } });
+  const result = await createTracker(gh, () => T0).check(1);
+  assert.equal(result.branch, 'TCPMOB-1482-x');
+  assert.deepEqual(result.conflicts.mcAndroid.map((c) => c.rule), ['same-branch']);
+  assert.deepEqual(result.conflicts.mkIos, []);
+  assert.deepEqual(Object.keys(result.conflicts).sort(), ['mcAndroid', 'mcIos', 'mcIosSim', 'mkAndroid', 'mkIos']);
+});
+
+test('a just-started iOS build blocks a second one of the same app', async () => {
+  const gh = fakeGh();
+  const tracker = createTracker(gh, () => T0);
+  await tracker.trigger(1, ['mkIos']);
+  await assert.rejects(tracker.trigger(2, ['mkIos']), (e) => e.status === 409);
 });

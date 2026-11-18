@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createServer } from '../server.js';
 import { createSettings } from '../lib/settings.js';
-import { buildQaCard } from '../lib/teams.js';
+import { buildQaCard, defaultQaText } from '../lib/teams.js';
 import { request } from './helpers.js';
 
 const TICKET_URL = 'https://timeclockplus.atlassian.net/browse/TCPMOB-1768';
@@ -72,6 +72,7 @@ test('preview returns title, link, tag, and which webhooks are set', async () =>
     key: 'TCPMOB-1768', title: 'CSSO | Permission Guards', ticketUrl: TICKET_URL,
     tag: { name: 'MobileHardware_QA', mention: false },
     ready: true, reason: null, cooldownUntil: null,
+    defaultText: `[${TICKET_URL}](${TICKET_URL}) is ready for PRE-QA. Builds are mentioned in the ticket.`,
   });
   server.close();
 });
@@ -121,4 +122,23 @@ test('settings: QA webhook is a masked secret; tag name and id are validated', (
   assert.equal(view.teams.qaTagName, 'MobileHardware_QA');
   assert.throws(() => settings.update({ teams: { qaTagId: 'bad id with spaces' } }), { status: 400 });
   assert.throws(() => settings.update({ teams: { qaTagName: '<script>' } }), { status: 400 });
+});
+
+test('QA card uses given text, then the tag', () => {
+  const tag = { name: 'MobileHardware_QA', id: 'MjQzMmYw' };
+  const content = buildQaCard({ summary: 'S', ticketUrl: TICKET_URL, tag, text: 'Ready, **build 412**' }).attachments[0].content;
+  assert.deepEqual(content.body.map((b) => b.text), ['S', 'Ready, **build 412**', '<at>MobileHardware_QA</at>']);
+  assert.equal(defaultQaText({ ticketUrl: 'u' }), '[u](u) is ready for PRE-QA. Builds are mentioned in the ticket.');
+});
+
+test('QA send uses edited text, rejects empty text, and force resends within the cooldown', async () => {
+  const { server, req, sent } = await boot();
+  assert.equal((await req('POST', QA, { text: ' ' })).status, 400);
+  assert.equal((await req('POST', QA, { text: 'Edited' })).status, 200);
+  assert.equal(sent.qa[0].attachments[0].content.body[1].text, 'Edited');
+  assert.equal((await req('POST', QA, {})).status, 429);
+  assert.equal((await req('POST', QA, { force: true })).status, 200);
+  assert.equal(sent.qa.length, 2);
+  assert.equal((await req('POST', QA, {})).status, 429);
+  server.close();
 });

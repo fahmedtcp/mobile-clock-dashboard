@@ -92,15 +92,15 @@ test('preview shows title from the Jira summary and me + requested reviewers wit
   ]);
 });
 
-test('send posts the card with chosen mentions and a note, then a 30-minute cooldown', async () => {
+test('send posts the card with chosen mentions and edited text, then a 30-minute cooldown', async () => {
   sent.length = 0;
-  const res = await req('POST', '/api/prs/1085/review-request', { logins: ['me', 'hashfaqtcp'], note: 'Small one' });
+  const res = await req('POST', '/api/prs/1085/review-request', { logins: ['me', 'hashfaqtcp'], text: 'Small one' });
   assert.equal(res.status, 200);
   assert.equal(sent.length, 1);
   const body = sent[0].attachments[0].content.body.map((b) => b.text);
   assert.equal(body[0], 'TCPMOB-1735 SubSearch | Testing — Consume V7-31623 fix');
   assert.equal(body.at(-1), '<at>Foad Ahmed</at> <at>Hamza Ashfaq</at>');
-  assert.ok(body.includes('Small one'));
+  assert.equal(body[1], 'Small one');
   const again = await req('POST', '/api/prs/1085/review-request', { logins: ['me'] });
   assert.equal(again.status, 429);
   assert.equal(sent.length, 1);
@@ -117,9 +117,31 @@ test('refuses PRs that are not mine, drafts, or closed — and unknown people', 
   assert.equal((await req('POST', '/api/prs/4/review-request', { logins: ['stranger'] })).status, 400);
 });
 
-test('note is limited to 500 characters', async () => {
+test('send with empty text or over 2,000 characters is 400', async () => {
   gh.pr = { ...pr, number: 5 };
-  assert.equal((await req('POST', '/api/prs/5/review-request', { logins: [], note: 'x'.repeat(501) })).status, 400);
+  assert.equal((await req('POST', '/api/prs/5/review-request', { logins: [], text: '  ' })).status, 400);
+  assert.equal((await req('POST', '/api/prs/5/review-request', { logins: [], text: 'x'.repeat(2001) })).status, 400);
+});
+
+test('preview returns defaultText; send without text uses it', async () => {
+  gh.pr = { ...pr, number: 6 };
+  const preview = (await req('GET', '/api/prs/6/review-request')).json();
+  assert.match(preview.defaultText, /^Hey Team!\n\nTicket: \[TCPMOB-1735\]/);
+  sent.length = 0;
+  assert.equal((await req('POST', '/api/prs/6/review-request', { logins: [] })).status, 200);
+  assert.equal(sent[0].attachments[0].content.body[1].text, preview.defaultText);
+});
+
+test('within the cooldown a second send is 429; with force it sends and restarts the timer', async () => {
+  gh.pr = { ...pr, number: 7 };
+  sent.length = 0;
+  assert.equal((await req('POST', '/api/prs/7/review-request', { logins: [] })).status, 200);
+  assert.equal((await req('POST', '/api/prs/7/review-request', { logins: [] })).status, 429);
+  assert.equal((await req('POST', '/api/prs/7/review-request', { logins: [], force: true })).status, 200);
+  assert.equal(sent.length, 2);
+  const preview = (await req('GET', '/api/prs/7/review-request')).json();
+  assert.ok(preview.cooldownUntil > Date.now() + 29 * 60000);
+  assert.equal((await req('POST', '/api/prs/7/review-request', { logins: [] })).status, 429);
 });
 
 test('a person added just for this message is looked up, mentioned, and only for this send', async () => {

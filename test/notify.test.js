@@ -35,11 +35,14 @@ test('pollDelay is 15s with active work, else 60s', () => {
   assert.equal(pollDelay([done('success')], [{ status: 'completed' }]), 60000);
 });
 
-test('submitState stays disabled while in flight regardless of checks', () => {
-  assert.deepEqual(submitState(3, true), { disabled: true, label: 'Triggering...' });
-  assert.deepEqual(submitState(3, false), { disabled: false, label: 'Trigger 3 builds' });
-  assert.deepEqual(submitState(1, false), { disabled: false, label: 'Trigger 1 build' });
-  assert.deepEqual(submitState(0, false), { disabled: true, label: 'Trigger 0 builds' });
+test('submitState labels say what will start and what will queue', () => {
+  assert.deepEqual(submitState({ start: 2, queue: 0 }, false), { disabled: false, label: 'Start 2 Builds' });
+  assert.deepEqual(submitState({ start: 1, queue: 0 }, false), { disabled: false, label: 'Start 1 Build' });
+  assert.deepEqual(submitState({ start: 1, queue: 1 }, false), { disabled: false, label: 'Start 1 Build, Queue 1' });
+  assert.deepEqual(submitState({ start: 0, queue: 1 }, false), { disabled: false, label: 'Queue 1 Build' });
+  assert.deepEqual(submitState({ start: 0, queue: 2 }, false), { disabled: false, label: 'Queue 2 Builds' });
+  assert.equal(submitState({ start: 0, queue: 0 }, false).disabled, true);
+  assert.deepEqual(submitState({ start: 3, queue: 1 }, true), { disabled: true, label: 'Starting…' });
 });
 
 test('behindStale refetches missing, failed-old, and expired entries', () => {
