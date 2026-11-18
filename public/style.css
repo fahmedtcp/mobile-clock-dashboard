@@ -1241,3 +1241,15 @@ details.more > summary { cursor: pointer; font-weight: 600; color: var(--label-2
 @media (prefers-reduced-motion: reduce) {
   .slot-track span, .slot-dot, #view-builds .group > li { transition: none; }
 }
+
+/* ---------- editable Teams message ---------- */
+.msg-split { display: grid; gap: 14px; }
+.msg-editor { display: grid; gap: 6px; margin-top: 6px; }
+textarea.field.msg-text { min-height: 9em; resize: vertical; font: inherit; font-size: .875rem; line-height: 1.45; }
+.msg-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.msg-count { font-variant-numeric: tabular-nums; }
+.send-anyway { margin-top: -4px; }
+@media (min-width: 720px) {
+  dialog.sheet:has(.msg-split) { width: min(880px, calc(100vw - 32px)); }
+  .msg-split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+}

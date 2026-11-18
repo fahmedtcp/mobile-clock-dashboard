@@ -428,17 +428,52 @@ function testSwitch(info, notSetUpText) {
   return { box, row };
 }
 
-// onReady handler: keeps the confirm button's label and disabled state in step with the test switch.
-function syncWithTestSwitch(testBox, liveLabel, isDisabled) {
+// onReady handler: keeps the send button's label and disabled state in step with the test switch,
+// the Send Anyway box, and the message text. `watch` lists other inputs that change the answer.
+function syncSendButton({ testBox, liveLabel, isDisabled, anyway = null, watch = [] }) {
   return (okBtn) => {
     const sync = () => {
-      okBtn.textContent = testBox.checked ? 'Send Test' : liveLabel;
-      okBtn.disabled = isDisabled(testBox.checked);
+      const testing = testBox.checked;
+      okBtn.textContent = testing ? 'Send Test' : anyway?.checked ? 'Send Again' : liveLabel;
+      okBtn.disabled = isDisabled(testing);
     };
-    testBox.addEventListener('change', sync);
+    for (const node of [testBox, anyway, ...watch].filter(Boolean)) {
+      node.addEventListener('change', sync);
+      node.addEventListener('input', sync);
+    }
     sync();
   };
 }
+
+// Inside the resend timer: an unchecked "Send Anyway" box, so an accidental second send stays blocked.
+const anywayBox = () => el('input', { type: 'checkbox' });
+const anywayRow = (box) => el('label', { class: 'switch send-anyway' }, box, el('span', {}, 'Send Anyway'));
+
+// The message text: pre-filled with the team wording, editable, with Reset to Default.
+const TEXT_MAX = 2000;
+const TEXT_COUNT_FROM = 1800;
+function messageEditor(defaultText, onChange) {
+  const area = el('textarea', { class: 'field msg-text', rows: 8, maxlength: TEXT_MAX, 'aria-label': 'Message' });
+  area.value = defaultText;
+  const count = el('span', { class: 'footnote msg-count', 'aria-live': 'polite' });
+  const reset = el('button', { type: 'button', class: 'linkish', onclick: () => {
+    area.focus();
+    area.select();
+    // insertText keeps the browser's undo history, so Cmd+Z brings the edited text back
+    if (!document.execCommand('insertText', false, defaultText)) area.value = defaultText;
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+  } }, 'Reset to Default');
+  const paint = () => {
+    const n = area.value.length;
+    count.textContent = n > TEXT_COUNT_FROM ? `${n.toLocaleString()}/2,000` : '';
+    onChange();
+  };
+  area.addEventListener('input', paint);
+  return { area, node: el('div', { class: 'msg-editor' }, area, el('div', { class: 'msg-tools' }, reset, count)), paint };
+}
+
+const messageBlocks = (text) => parseMarkdown(text).map(mdBlock);
+const blankText = (area) => !area.value.trim();
 
 const teamsCard = (...children) => el('div', { class: 'teams-card', 'aria-label': 'Message preview' }, ...children);
 
@@ -455,19 +490,15 @@ function mentionCheckboxes(people) {
   return el('fieldset', { class: 'choice-list' }, el('legend', { class: 'sr-only' }, 'Mention'), boxes);
 }
 
-// A faithful preview of the Teams card.
-function paintReviewPreview(preview, info, note, chosen) {
+// A faithful preview of the Teams card: fixed title, the message text, then the mentions.
+function paintReviewPreview(preview, info, text, chosen) {
   const personClass = (person, i) => {
     if (!person.email) return 'tc-plain';
     return i === 0 && person.login === ctx.shared.login ? 'tc-me' : 'tc-at';
   };
   preview.replaceChildren(
     el('div', { class: 'tc-title' }, info.title),
-    el('p', {}, 'Hey Team!'),
-    el('p', {}, 'Ticket: ', ext(info.ticketUrl, info.key), el('br'), 'PR: ', ext(info.prUrl, `PR#${info.prNumber}`)),
-    el('p', {}, 'is ready for Dev-Review, Kindly take a peak at your convenience.'),
-    note.value.trim() && el('p', {}, note.value.trim()),
-    el('p', {}, 'Thanks'),
+    ...messageBlocks(text),
     el('p', { class: 'tc-people' },
       chosen.map((person, i) => el('span', { class: personClass(person, i) }, person.name))));
 }
@@ -481,7 +512,6 @@ const teamsSetupSteps = () => [
     el('li', {}, 'Paste it into Settings, under Teams.')),
 ];
 
-// The note, mention checkboxes, and a preview that repaints as either changes.
 // "+ Add person": mention someone just for this message by GitHub login. Nothing is saved.
 const ADD_MAX = 5;
 function addPersonRow(info, people, added) {
@@ -515,19 +545,14 @@ function addPersonRow(info, people, added) {
 }
 
 function reviewMessageForm(info) {
-  const note = el('textarea', {
-    class: 'field', rows: 2, maxlength: 500, placeholder: 'Optional note, for example "Small one, mostly tests"',
-    'aria-label': 'Note',
-  });
   const people = mentionCheckboxes(info.people);
   const chosen = () => [...people.querySelectorAll('input:checked')]
     .map((input) => info.people.find((p) => p.login === input.value));
   const preview = teamsCard();
-  const paint = () => paintReviewPreview(preview, info, note, chosen());
-  note.addEventListener('input', paint);
-  people.addEventListener('change', paint);
-  paint();
-  return { note, people, chosen, preview };
+  const editor = messageEditor(info.defaultText, () => paintReviewPreview(preview, info, editor.area.value, chosen()));
+  people.addEventListener('change', editor.paint);
+  editor.paint();
+  return { editor, people, chosen, preview };
 }
 
 // Ask the team channel for a review, in the user's own message format. Preview first; nothing sends until confirmed.
@@ -537,28 +562,33 @@ async function requestReview(pr) {
   const cooling = isCoolingDown(info);
   let sentTest = false;
   const test = testSwitch(info, 'Test chat not set up (TEAMS_TEST_WEBHOOK_URL)');
-  const { note, people, chosen, preview } = reviewMessageForm(info);
+  const { editor, people, chosen, preview } = reviewMessageForm(info);
+  const anyway = cooling ? anywayBox() : null;
   const added = new Set();
   const ok = await confirmSheet({
     title: 'Request Review on Teams',
     body: info.configured
       ? [
-          preview,
+          el('div', { class: 'msg-split' }, el('label', { class: 'field-label' }, 'Message', editor.node), preview),
           el('div', {}, el('p', { class: 'list-label', 'aria-hidden': 'true' }, 'Mention'), people, addPersonRow(info, people, added)),
-          el('label', { class: 'field-label' }, 'Note', note),
           test.row,
           el('p', { class: 'footnote' }, cooling
             ? cooldownNote(`#${pr.number}`, info.cooldownUntil)
             : 'Posts to your team channel through its Workflows webhook.'),
+          anyway && anywayRow(anyway),
         ]
       : teamsSetupSteps(),
     confirmLabel: info.testConfigured ? 'Send Test' : 'Send to Teams',
-    confirmDisabled: !info.configured || (cooling && !info.testConfigured),
-    onReady: syncWithTestSwitch(test.box, 'Send to Teams', (testing) => !info.configured || (!testing && cooling)),
+    confirmDisabled: !info.configured,
+    onReady: syncSendButton({
+      testBox: test.box, liveLabel: 'Send to Teams', anyway, watch: [editor.area],
+      isDisabled: (testing) => !info.configured || blankText(editor.area) || (!testing && cooling && !anyway.checked),
+    }),
     onConfirm: async () => {
       sentTest = test.box.checked;
       await post(`/api/prs/${pr.number}/review-request`, {
-        logins: chosen().map((p) => p.login), note: note.value, test: sentTest, added: [...added],
+        logins: chosen().map((p) => p.login), text: editor.area.value, test: sentTest, added: [...added],
+        force: Boolean(!sentTest && anyway?.checked),
       });
     },
   });
@@ -674,10 +704,12 @@ function qaFootnote(key, info, cooling) {
       + 'The ticket status doesn\'t change.';
 }
 
-const qaPreview = (info) => teamsCard(
-  el('div', { class: 'tc-title' }, info.title),
-  el('p', {}, ext(info.ticketUrl, info.ticketUrl), ' is ready for PRE-QA. Builds are mentioned in the ticket.'),
-  el('p', {}, info.tag.mention ? el('span', { class: 'tc-at' }, info.tag.name) : el('strong', {}, info.tag.name)));
+function paintQaPreview(preview, info, text) {
+  preview.replaceChildren(
+    el('div', { class: 'tc-title' }, info.title),
+    ...messageBlocks(text),
+    el('p', {}, info.tag.mention ? el('span', { class: 'tc-at' }, info.tag.name) : el('strong', {}, info.tag.name)));
+}
 
 // Tell QA the ticket is ready for PRE-QA, in the team's format. Separate from Send to QA for now.
 async function requestQa(pr) {
@@ -687,25 +719,32 @@ async function requestQa(pr) {
   const cooling = isCoolingDown(info);
   let sentTest = false;
   const test = testSwitch(info, 'Test chat not set up');
-  const preview = qaPreview(info);
+  const preview = teamsCard();
+  const editor = messageEditor(info.defaultText, () => paintQaPreview(preview, info, editor.area.value));
+  editor.paint();
+  const anyway = cooling ? anywayBox() : null;
   const ready = info.configured && info.ready;
   const ok = await confirmSheet({
     title: 'Request QA Review on Teams',
     body: [
-      preview,
+      el('div', { class: 'msg-split' }, el('label', { class: 'field-label' }, 'Message', editor.node), preview),
       !info.ready && el('p', { class: 'banner error' }, info.reason),
       info.configured
         ? test.row
         : el('p', { class: 'muted' }, 'The QA channel isn\'t set up. Add its webhook in Settings, under Teams.'),
       el('p', { class: 'footnote' }, qaFootnote(key, info, cooling)),
+      anyway && anywayRow(anyway),
     ].filter(Boolean),
     confirmLabel: info.testConfigured ? 'Send Test' : 'Send to QA Channel',
     confirmDisabled: !info.ready || (!info.configured && !info.testConfigured),
-    onReady: syncWithTestSwitch(test.box, 'Send to QA Channel',
-      (testing) => !info.ready || (testing ? !info.testConfigured : !ready || cooling)),
+    onReady: syncSendButton({
+      testBox: test.box, liveLabel: 'Send to QA Channel', anyway, watch: [editor.area],
+      isDisabled: (testing) => !info.ready || blankText(editor.area)
+        || (testing ? !info.testConfigured : !ready || (cooling && !anyway.checked)),
+    }),
     onConfirm: async () => {
       sentTest = test.box.checked;
-      await post(`/api/tickets/${key}/qa-request`, { test: sentTest });
+      await post(`/api/tickets/${key}/qa-request`, { test: sentTest, text: editor.area.value, force: Boolean(!sentTest && anyway?.checked) });
     },
   });
   if (!ok) return;
